@@ -36,7 +36,7 @@ require (
 	github.com/database64128/tfo-go/v2 v2.3.2 // indirect
 	github.com/dblohm7/wingoes v0.0.0-20240119213807-a09d6be7affa // indirect
 	github.com/dgryski/go-metro v0.0.0-20200812162917-85c65e2d0165 // indirect
-	github.com/dyhkwong/sing-juicity v0.1.1 // indirect
+	github.com/dyhkwong/sing-juicity v0.1.2 // indirect
 	github.com/ebitengine/purego v0.9.1 // indirect
 	github.com/florianl/go-nfqueue/v2 v2.0.2 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
@@ -178,7 +178,7 @@ require (
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
 
-replace github.com/sagernet/sing-box => github.com/Throneproj/sing-box v1.11.16-0.20260331173158-ff5e48cda7f1
+replace github.com/sagernet/sing-box => github.com/Throneproj/sing-box v1.11.16-0.20260331193727-c21e813ab835
 
 replace github.com/sagernet/cronet-go => github.com/parhelia512/cronet-go v0.0.0-20260329114135-f2495ade5da7
 
