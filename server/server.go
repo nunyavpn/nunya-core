@@ -8,7 +8,6 @@ import (
 	"ThroneCore/internal/sys"
 	"ThroneCore/internal/wg"
 	"ThroneCore/internal/xray"
-	"ThroneCore/privilege"
 	"ThroneCore/test_utils"
 	"context"
 	"errors"
@@ -457,7 +456,7 @@ func (s *server) IsPrivileged(ctx context.Context, _ *gen.EmptyReq) (*gen.IsPriv
 		}, nil
 	}
 
-	return &gen.IsPrivilegedResponse{HasPrivilege: To(privilege.CheckPrivilege())}, nil
+	return &gen.IsPrivilegedResponse{HasPrivilege: To(os.Geteuid() == 0)}, nil
 }
 
 func (s *server) SpeedTest(ctx context.Context, in *gen.SpeedTestRequest) (*gen.SpeedTestResponse, error) {
