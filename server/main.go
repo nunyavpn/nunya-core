@@ -28,6 +28,10 @@ func RunCore() {
 	flag.CommandLine.Parse(os.Args[1:])
 	debug = *_debug
 
+	if !debug {
+		checkParentProcess()
+	}
+
 	go func() {
 		parent, err := os.FindProcess(os.Getppid())
 		if err != nil {
