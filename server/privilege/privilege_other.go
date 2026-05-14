@@ -1,9 +1,9 @@
 //go:build !linux
 
-package main
+package privilege
 
 import "os"
 
-func checkPrivilege() bool {
+func CheckPrivilege() bool {
 	return os.Geteuid() == 0
 }

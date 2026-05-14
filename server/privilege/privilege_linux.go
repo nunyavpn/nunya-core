@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package privilege
 
 import (
 	"os"
@@ -8,7 +8,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func checkPrivilege() bool {
+func CheckPrivilege() bool {
 	if os.Geteuid() == 0 {
 		return true
 	}

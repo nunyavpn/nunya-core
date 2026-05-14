@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package parentcheck
 
 import (
 	"fmt"

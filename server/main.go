@@ -2,6 +2,8 @@ package main
 
 import (
 	"ThroneCore/internal/boxmain"
+	"ThroneCore/ipc"
+	"ThroneCore/parentcheck"
 	"ThroneCore/test_utils"
 	"context"
 	"fmt"
@@ -25,7 +27,7 @@ func RunCore() {
 	}
 	debug = os.Getenv("THRONE_CORE_DEBUG") == "1"
 
-	checkParentProcess()
+	parentcheck.CheckParentProcess()
 
 	// Exit when parent dies
 	go func() {
@@ -53,7 +55,7 @@ func RunCore() {
 	var conn net.Conn
 	var err error
 	for i := 0; i < 10; i++ {
-		conn, err = connectIPC(socketName)
+		conn, err = ipc.ConnectIPC(socketName)
 		if err == nil {
 			break
 		}

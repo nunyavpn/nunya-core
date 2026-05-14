@@ -1,9 +1,9 @@
 //go:build linux || darwin
 
-package main
+package ipc
 
 import "net"
 
-func connectIPC(socketName string) (net.Conn, error) {
+func ConnectIPC(socketName string) (net.Conn, error) {
 	return net.Dial("unix", socketName)
 }

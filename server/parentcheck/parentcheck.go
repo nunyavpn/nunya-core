@@ -1,6 +1,6 @@
 //go:build !debug
 
-package main
+package parentcheck
 
 import (
 	"log"
@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-func checkParentProcess() {
+func CheckParentProcess() {
 	ppid := os.Getppid()
 
 	parentPath, err := getParentExePath(ppid)
