@@ -5,7 +5,6 @@ import (
 	"ThroneCore/internal/boxmain"
 	"ThroneCore/test_utils"
 	"context"
-	"flag"
 	"fmt"
 	"github.com/xtls/xray-core/core"
 	"google.golang.org/grpc"
@@ -23,14 +22,15 @@ import (
 )
 
 func RunCore() {
-	_port := flag.Int("port", 19810, "")
-	_debug := flag.Bool("debug", false, "")
-	flag.CommandLine.Parse(os.Args[1:])
-	debug = *_debug
-
-	if !debug {
-		checkParentProcess()
+	port := 19810
+	if portStr := os.Getenv("THRONE_CORE_PORT"); portStr != "" {
+		if p, err := strconv.Atoi(portStr); err == nil && p > 0 {
+			port = p
+		}
 	}
+	debug = os.Getenv("THRONE_CORE_DEBUG") == "1"
+
+	checkParentProcess()
 
 	go func() {
 		parent, err := os.FindProcess(os.Getppid())
@@ -53,7 +53,7 @@ func RunCore() {
 	boxmain.DisableColor()
 
 	// GRPC
-	lis, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(*_port))
+	lis, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
