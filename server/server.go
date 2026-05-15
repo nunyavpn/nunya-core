@@ -74,7 +74,7 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 		}
 		if in.ExtraProcessConf != nil {
 			extraConfPath := *in.ExtraProcessConfDir + string(os.PathSeparator) + "extra.conf"
-			f, e := os.OpenFile(extraConfPath, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 700)
+			f, e := os.OpenFile(extraConfPath, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0o600)
 			if e != nil {
 				err = E.Cause(e, "Failed to open extra.conf")
 				return
@@ -85,6 +85,12 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 				return
 			}
 			_ = f.Close()
+			// The extra process is de-privileged (see process.applyPrivilegeDrop),
+			// so it must still be able to read the config the elevated Core wrote.
+			if e = process.MakeConfigReadable(extraConfPath); e != nil {
+				err = E.Cause(e, "Failed to make extra.conf readable for extra process")
+				return
+			}
 			for idx, arg := range args {
 				if strings.Contains(arg, "%s") {
 					args[idx] = fmt.Sprintf(arg, extraConfPath)

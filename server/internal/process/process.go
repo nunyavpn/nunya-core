@@ -2,8 +2,11 @@ package process
 
 import (
 	"fmt"
-	"github.com/sagernet/sing/common/atomic"
+	"os"
 	"os/exec"
+	"strings"
+
+	"github.com/sagernet/sing/common/atomic"
 )
 
 type Process struct {
@@ -24,6 +27,16 @@ func (p *Process) Start() error {
 	p.cmd.Stdout = &pipeLogger{prefix: "Extra Core", noOut: p.noOut}
 	p.cmd.Stderr = &pipeLogger{prefix: "Extra Core", noOut: p.noOut}
 
+	p.cmd.Env = childEnv()
+
+	// The Core may run elevated (setuid-root on unix, UAC-elevated on Windows),
+	// but the extra process is an arbitrary user-supplied binary that must not
+	// inherit those privileges. Drop to the unprivileged real user, or refuse
+	// to start it at all.
+	if err := applyPrivilegeDrop(p.cmd); err != nil {
+		return err
+	}
+
 	err := p.cmd.Start()
 	if err != nil {
 		return err
@@ -43,4 +56,18 @@ func (p *Process) Start() error {
 func (p *Process) Stop() {
 	p.stopped.Store(true)
 	_ = p.cmd.Process.Kill()
+}
+
+// childEnv returns the parent environment minus any THRONE-prefixed variables,
+// which carry app-internal configuration the external process must not see.
+func childEnv() []string {
+	parent := os.Environ()
+	out := make([]string, 0, len(parent))
+	for _, kv := range parent {
+		if name, _, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(strings.ToUpper(name), "THRONE") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
