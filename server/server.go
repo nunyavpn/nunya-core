@@ -72,12 +72,12 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 			err = E.Cause(e, "Failed to parse args")
 			return
 		}
-		var extraConfPath string
+		var extraConfPath, extraCleanupPath string
 		if in.ExtraProcessConf != nil {
 			// The Core (not the GUI) creates the config, in a fresh randomly
 			// named temp file that cannot be hijacked by symlink/pre-existing
 			// file tricks even when the Core is elevated. See CreateExtraConfig.
-			extraConfPath, e = process.CreateExtraConfig(*in.ExtraProcessConf)
+			extraConfPath, extraCleanupPath, e = process.CreateExtraConfig(*in.ExtraProcessConf)
 			if e != nil {
 				err = E.Cause(e, "Failed to create extra.conf")
 				return
@@ -91,7 +91,7 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 		}
 
 		extraProcess = process.NewProcess(*in.ExtraProcessPath, args, *in.ExtraNoOut)
-		extraProcess.SetConfigFile(extraConfPath)
+		extraProcess.SetCleanupPath(extraCleanupPath)
 		err = extraProcess.Start()
 		if err != nil {
 			return
