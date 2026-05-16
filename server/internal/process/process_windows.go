@@ -146,11 +146,11 @@ func findProcess(name string) (uint32, error) {
 	return 0, fmt.Errorf("process %q not found", name)
 }
 
-// MakeConfigReadable best-effort grants the local Users group read access to
+// makeConfigReadable best-effort grants the local Users group read access to
 // path so a de-privileged child can read it. With the linked-token path the
 // child is the same user at a lower integrity level and can already read it,
 // so a failure here is non-fatal.
-func MakeConfigReadable(path string) error {
+func makeConfigReadable(path string) error {
 	usersSid, err := windows.CreateWellKnownSid(windows.WinBuiltinUsersSid)
 	if err != nil {
 		return nil

@@ -88,11 +88,11 @@ func userEnv(env []string, ruid int) []string {
 	return append(out, "HOME="+u.HomeDir, "USER="+u.Username, "LOGNAME="+u.Username)
 }
 
-// MakeConfigReadable ensures path can be read by the de-privileged extra
+// makeConfigReadable ensures path can be read by the de-privileged extra
 // process. The exact target uid/gid is known, so ownership is transferred and
 // the mode kept tight (0600) rather than world-exposing a config that may
 // carry secrets.
-func MakeConfigReadable(path string) error {
+func makeConfigReadable(path string) error {
 	if os.Geteuid() != 0 {
 		return os.Chmod(path, 0o600)
 	}
