@@ -11,9 +11,7 @@ import (
 )
 
 func CheckParentProcess() {
-	ppid := os.Getppid()
-
-	parentPath, err := getParentExePath(ppid)
+	parentPath, err := getParentExePath(ParentPID)
 	if err != nil {
 		log.Fatalf("parent check: cannot read parent executable: %v", err)
 	}

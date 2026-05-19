@@ -31,7 +31,7 @@ func RunCore() {
 
 	// Exit when parent dies
 	go func() {
-		parent, err := os.FindProcess(os.Getppid())
+		parent, err := os.FindProcess(parentcheck.ParentPID)
 		if err != nil {
 			log.Fatalln("find parent:", err)
 		}
@@ -55,7 +55,7 @@ func RunCore() {
 	var conn net.Conn
 	var err error
 	for i := 0; i < 10; i++ {
-		conn, err = ipc.ConnectIPC(socketName)
+		conn, err = ipc.ConnectIPC(socketName, parentcheck.ParentPID)
 		if err == nil {
 			break
 		}
