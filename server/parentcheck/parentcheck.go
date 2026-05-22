@@ -15,17 +15,13 @@ func CheckParentProcess() {
 	if err != nil {
 		log.Fatalf("parent check: cannot read parent executable: %v", err)
 	}
-	if resolved, err := filepath.EvalSymlinks(parentPath); err == nil {
-		parentPath = resolved
-	}
+	parentPath = resolveFinalPath(parentPath)
 
 	selfPath, err := os.Executable()
 	if err != nil {
 		log.Fatalf("parent check: cannot read own executable: %v", err)
 	}
-	if resolved, err := filepath.EvalSymlinks(selfPath); err == nil {
-		selfPath = resolved
-	}
+	selfPath = resolveFinalPath(selfPath)
 
 	selfDir := filepath.Dir(selfPath)
 	parentDir := filepath.Dir(parentPath)
@@ -33,12 +29,12 @@ func CheckParentProcess() {
 
 	if runtime.GOOS == "windows" {
 		if !strings.EqualFold(parentDir, selfDir) || !strings.EqualFold(parentBase, "Throne.exe") {
-			log.Fatalf("parent check failed: unexpected parent %q", parentPath)
+			log.Fatalf("parent check failed: unexpected parent %q, selfPath is %q", parentPath, selfPath)
 		}
 		return
 	}
 
 	if parentDir != selfDir || parentBase != "Throne" {
-		log.Fatalf("parent check failed: unexpected parent %q", parentPath)
+		log.Fatalf("parent check failed: unexpected parent %q, selfPath is %q", parentPath, selfPath)
 	}
 }

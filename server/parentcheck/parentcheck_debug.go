@@ -2,4 +2,4 @@
 
 package parentcheck
 
-func checkParentProcess() {}
+func CheckParentProcess() {}

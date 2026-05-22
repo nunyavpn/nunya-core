@@ -8,6 +8,7 @@ package parentcheck
 import "C"
 import (
 	"fmt"
+	"path/filepath"
 	"unsafe"
 )
 
@@ -18,4 +19,11 @@ func getParentExePath(pid int) (string, error) {
 		return "", fmt.Errorf("proc_pidpath failed for pid %d", pid)
 	}
 	return string(buf[:int(ret)]), nil
+}
+
+func resolveFinalPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
 }
