@@ -8,8 +8,8 @@ require (
 	github.com/gofrs/uuid/v5 v5.4.0
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 	github.com/sagernet/sing v0.8.10
-	github.com/sagernet/sing-box v1.13.12
-	github.com/sagernet/sing-tun v0.8.9
+	github.com/sagernet/sing-box v1.13.13-0.20260603083344-78b2e12fbdd8
+	github.com/sagernet/sing-tun v0.8.10
 	github.com/spf13/cobra v1.10.2
 	github.com/tailscale/go-winio v0.0.0-20231025203758-c4f33415bf55
 	github.com/xtls/xray-core v1.260327.0
@@ -18,6 +18,10 @@ require (
 	google.golang.org/grpc v1.81.0
 	google.golang.org/protobuf v1.36.11
 )
+
+replace github.com/sagernet/sing-box => github.com/Throneproj/sing-box v1.11.16-0.20260605130317-0d2b84c01725
+
+replace github.com/sagernet/wireguard-go => github.com/throneproj/wireguard-go v0.0.0-20260531154859-70cd3fe8a5c2
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
@@ -173,10 +177,6 @@ require (
 	gvisor.dev/gvisor v0.0.0-20260122175437-89a5d21be8f0 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
-
-replace github.com/sagernet/sing-box => github.com/Throneproj/sing-box v1.11.16-0.20260531155042-90f9ec606d49
-
-replace github.com/sagernet/wireguard-go => github.com/throneproj/wireguard-go v0.0.0-20260531154859-70cd3fe8a5c2
 
 replace github.com/sagernet/cronet-go => github.com/parhelia512/cronet-go v0.0.0-20260515230114-6df543aa5cbc
 
