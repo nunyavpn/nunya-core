@@ -229,6 +229,17 @@ func dispatch(methodName string, payload []byte) ([]byte, error) {
 		}
 		return proto.Marshal(resp)
 
+	case "GetDefaultInterface":
+		req := &gen.EmptyReq{}
+		if err := proto.Unmarshal(payload, req); err != nil {
+			return nil, err
+		}
+		resp, err := s.GetDefaultInterface(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		return proto.Marshal(resp)
+
 	case "SpeedTest":
 		req := &gen.SpeedTestRequest{}
 		if err := proto.Unmarshal(payload, req); err != nil {

@@ -17,6 +17,8 @@ service LibcoreService {
   //
   rpc IsPrivileged(EmptyReq) returns (IsPrivilegedResponse);
   //
+  rpc GetDefaultInterface(EmptyReq) returns (GetDefaultInterfaceResponse);
+  //
   rpc SpeedTest(SpeedTestRequest) returns(SpeedTestResponse);
   rpc QuerySpeedTest(EmptyReq) returns(QuerySpeedTestResponse);
   rpc QueryCountryTest(EmptyReq) returns(QueryCountryTestResponse);
@@ -97,6 +99,11 @@ message SetSystemDNSRequest {
 
 message IsPrivilegedResponse {
   optional bool has_privilege = 1 [default = false];
+}
+
+message GetDefaultInterfaceResponse {
+  optional string name = 1 [default = ""];
+  optional int32 index = 2 [default = 0];
 }
 
 message SpeedTestRequest {
