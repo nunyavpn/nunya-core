@@ -22,6 +22,7 @@ import (
 	"github.com/google/shlex"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/experimental/clashapi"
+	"github.com/sagernet/sing-box/experimental/clashapi/trafficontrol"
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/service"
@@ -422,41 +423,64 @@ func (s *server) QueryStats(ctx context.Context, in *gen.EmptyReq) (out *gen.Que
 	return
 }
 
-func (s *server) ListConnections(ctx context.Context, in *gen.EmptyReq) (*gen.ListConnectionsResp, error) {
-	if boxInstance == nil {
-		return &gen.ListConnectionsResp{}, nil
+// connMetaToProto maps one tracker's metadata into the wire type. Shared by the
+// active and closed lists so both carry identical, enriched fields.
+func connMetaToProto(c *trafficontrol.TrackerMetadata) *gen.ConnectionMetaData {
+	process := ""
+	processPath := ""
+	if c.Metadata.ProcessInfo != nil {
+		processPath = c.Metadata.ProcessInfo.ProcessPath
+		spl := strings.Split(processPath, string(os.PathSeparator))
+		process = spl[len(spl)-1]
 	}
-	if service.FromContext[adapter.ClashServer](boxInstance.Context()) == nil {
-		return &gen.ListConnectionsResp{}, errors.New("no clash server found")
+	var closedAt int64
+	if !c.ClosedAt.IsZero() {
+		closedAt = c.ClosedAt.UnixMilli()
 	}
-	clash, ok := service.FromContext[adapter.ClashServer](boxInstance.Context()).(*clashapi.Server)
-	if !ok {
-		return &gen.ListConnectionsResp{}, errors.New("invalid state, should not be here")
+	return &gen.ConnectionMetaData{
+		Id:          To(c.ID.String()),
+		CreatedAt:   To(c.CreatedAt.UnixMilli()),
+		Upload:      To(c.Upload.Load()),
+		Download:    To(c.Download.Load()),
+		Outbound:    To(c.Outbound),
+		Network:     To(c.Metadata.Network),
+		Dest:        To(c.Metadata.Destination.String()),
+		Protocol:    To(c.Metadata.Protocol),
+		Domain:      To(c.Metadata.Domain),
+		Process:     To(process),
+		ProcessPath: To(processPath),
+		Chain:       c.Chain,
+		ClosedAt:    To(closedAt),
 	}
-	connections := clash.TrafficManager().Connections()
+}
 
-	res := make([]*gen.ConnectionMetaData, 0)
-	for _, c := range connections {
-		process := ""
-		if c.Metadata.ProcessInfo != nil {
-			spl := strings.Split(c.Metadata.ProcessInfo.ProcessPath, string(os.PathSeparator))
-			process = spl[len(spl)-1]
-		}
-		r := &gen.ConnectionMetaData{
-			Id:        To(c.ID.String()),
-			CreatedAt: To(c.CreatedAt.UnixMilli()),
-			Upload:    To(c.Upload.Load()),
-			Download:  To(c.Download.Load()),
-			Outbound:  To(c.Outbound),
-			Network:   To(c.Metadata.Network),
-			Dest:      To(c.Metadata.Destination.String()),
-			Protocol:  To(c.Metadata.Protocol),
-			Domain:    To(c.Metadata.Domain),
-			Process:   To(process),
-		}
-		res = append(res, r)
+// QueryConnections returns both live connections (for the connection table) and
+// the recently-closed ring (so traffic accounting doesn't lose the tail of a
+// connection that closed between polls). The closed ring is non-draining; the
+// client dedups by connection id.
+func (s *server) QueryConnections(ctx context.Context, in *gen.EmptyReq) (*gen.QueryConnectionsResp, error) {
+	if boxInstance == nil {
+		return &gen.QueryConnectionsResp{}, nil
 	}
-	return &gen.ListConnectionsResp{Connections: res}, nil
+	clashServer := service.FromContext[adapter.ClashServer](boxInstance.Context())
+	if clashServer == nil {
+		return &gen.QueryConnectionsResp{}, errors.New("no clash server found")
+	}
+	clash, ok := clashServer.(*clashapi.Server)
+	if !ok {
+		return &gen.QueryConnectionsResp{}, errors.New("invalid state, should not be here")
+	}
+	tm := clash.TrafficManager()
+
+	active := make([]*gen.ConnectionMetaData, 0)
+	for _, c := range tm.Connections() {
+		active = append(active, connMetaToProto(c))
+	}
+	closed := make([]*gen.ConnectionMetaData, 0)
+	for _, c := range tm.ClosedConnections() {
+		closed = append(closed, connMetaToProto(c))
+	}
+	return &gen.QueryConnectionsResp{Active: active, Closed: closed}, nil
 }
 
 func (s *server) IsPrivileged(ctx context.Context, _ *gen.EmptyReq) (*gen.IsPrivilegedResponse, error) {
@@ -528,6 +552,8 @@ func (s *server) SpeedTest(ctx context.Context, in *gen.SpeedTestRequest) (*gen.
 			ServerName:    To(data.ServerName),
 			ServerCountry: To(data.ServerCountry),
 			Cancelled:     To(data.Cancelled),
+			DlBytes:       To(data.DlBytes),
+			UlBytes:       To(data.UlBytes),
 		})
 	}
 
@@ -550,6 +576,8 @@ func (s *server) QuerySpeedTest(context.Context, *gen.EmptyReq) (*gen.QuerySpeed
 			ServerName:    To(res.ServerName),
 			ServerCountry: To(res.ServerCountry),
 			Cancelled:     To(res.Cancelled),
+			DlBytes:       To(res.DlBytes),
+			UlBytes:       To(res.UlBytes),
 		},
 		IsRunning: To(isRunning),
 	}, nil

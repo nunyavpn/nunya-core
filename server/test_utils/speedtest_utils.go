@@ -28,6 +28,8 @@ type SpeedTestResult struct {
 	ServerCountry string
 	Error         error
 	Cancelled     bool
+	DlBytes       int64 // total bytes moved by the test, credited to per-config stats
+	UlBytes       int64
 }
 
 type SpeedTestResultQuerier struct {
@@ -194,6 +196,7 @@ func simpleDownloadTest(ctx context.Context, dialer func(ctx context.Context, ne
 		select {
 		case <-done:
 			res.DlSpeed = internal.BrateToStr(internal.CalculateBRate(float64(buf.Len()), start))
+			res.DlBytes = int64(buf.Len())
 			res.Latency = latency
 			SpTQuerier.storeResult(res)
 			return nil
@@ -202,6 +205,7 @@ func simpleDownloadTest(ctx context.Context, dialer func(ctx context.Context, ne
 			return ctx.Err()
 		case <-ticker.C:
 			res.DlSpeed = internal.BrateToStr(internal.CalculateBRate(float64(buf.Len()), start))
+			res.DlBytes = int64(buf.Len())
 			res.Latency = latency
 			SpTQuerier.storeResult(res)
 		}
@@ -251,6 +255,8 @@ func speedTestWithDialer(ctx context.Context, dialer func(ctx context.Context, n
 		case <-done:
 			res.DlSpeed = internal.BrateToStr(float64(srv.DLSpeed))
 			res.UlSpeed = internal.BrateToStr(float64(srv.ULSpeed))
+			res.DlBytes = srv.Context.GetTotalDownload()
+			res.UlBytes = srv.Context.GetTotalUpload()
 			res.Latency = int32(srv.Latency.Milliseconds())
 			SpTQuerier.storeResult(res)
 			return nil
@@ -260,6 +266,8 @@ func speedTestWithDialer(ctx context.Context, dialer func(ctx context.Context, n
 		case <-ticker.C:
 			res.DlSpeed = internal.BrateToStr(srv.Context.GetEWMADownloadRate())
 			res.UlSpeed = internal.BrateToStr(srv.Context.GetEWMAUploadRate())
+			res.DlBytes = srv.Context.GetTotalDownload()
+			res.UlBytes = srv.Context.GetTotalUpload()
 			res.Latency = int32(srv.Latency.Milliseconds())
 			SpTQuerier.storeResult(res)
 		}

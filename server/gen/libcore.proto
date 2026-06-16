@@ -11,7 +11,7 @@ service LibcoreService {
   rpc StopTest(EmptyReq) returns (EmptyResp);
   rpc QueryURLTest(EmptyReq) returns (QueryURLTestResponse);
   rpc QueryStats(EmptyReq) returns (QueryStatsResp);
-  rpc ListConnections(EmptyReq) returns (ListConnectionsResp);
+  rpc QueryConnections(EmptyReq) returns (QueryConnectionsResp);
   //
   rpc SetSystemDNS(SetSystemDNSRequest) returns (EmptyResp);
   //
@@ -76,8 +76,13 @@ message QueryStatsResp{
   map<string, int64> downs = 2;
 }
 
-message ListConnectionsResp {
-  repeated ConnectionMetaData connections = 1;
+// active = currently live connections (drives the connection table).
+// closed = the core's recently-closed ring (non-draining); consumers dedup by
+// id. Together they let the client diff per-connection byte counters without
+// losing the tail of a connection that closed between polls.
+message QueryConnectionsResp {
+  repeated ConnectionMetaData active = 1;
+  repeated ConnectionMetaData closed = 2;
 }
 
 message ConnectionMetaData {
@@ -90,7 +95,10 @@ message ConnectionMetaData {
   optional string dest = 7 [default = ""];
   optional string protocol = 8 [default = ""];
   optional string domain = 9 [default = ""];
-  optional string process = 10 [default = ""];
+  optional string process = 10 [default = ""];      // basename, e.g. chrome.exe
+  optional string process_path = 11 [default = ""]; // full path (icon lookup etc.)
+  repeated string chain = 12;                        // outbound chain, for later use
+  optional int64 closed_at = 13 [default = 0];       // 0 while live
 }
 
 message SetSystemDNSRequest {
@@ -131,6 +139,8 @@ message SpeedTestResult {
   optional string server_name = 6 [default = ""];
   optional string server_country = 7 [default = ""];
   optional bool cancelled = 8 [default = false];
+  optional int64 dl_bytes = 9 [default = 0];  // bytes moved by the test, for traffic stats
+  optional int64 ul_bytes = 10 [default = 0];
 }
 
 message SpeedTestResponse {
