@@ -215,6 +215,14 @@ func (s *server) CheckConfig(ctx context.Context, in *gen.LoadConfigReq) (out *g
 			out.Error = To(fmt.Sprintf("CheckConfig panic: %v", r))
 		}
 	}()
+	if in.GetNeedXray() {
+		// Xray-format configs can't be validated by sing-box; hand them to the
+		// Xray core instead.
+		if err := xray.CheckXrayConfig(in.GetXrayConfig()); err != nil {
+			out.Error = To(err.Error())
+		}
+		return
+	}
 	err := boxmain.Check([]byte(*in.CoreConfig))
 	if err != nil {
 		out.Error = To(err.Error())

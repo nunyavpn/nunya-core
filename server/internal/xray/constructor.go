@@ -25,3 +25,21 @@ func CreateXrayInstance(config string) (*core.Instance, error) {
 
 	return server, nil
 }
+
+// CheckXrayConfig validates an Xray JSON config without creating a running
+// instance. Decoding plus conf.Build() parses and validates the protocol
+// settings (UUIDs, flow, encryption, stream/TLS/reality settings, etc.), which
+// is everything that determines whether a profile is well-formed. It
+// deliberately stops short of core.New: that would instantiate handlers, and
+// (via internet.InitSystemDialer) mutate package-global dialer state — unsafe
+// here because validation can run concurrently (bulk "remove invalid configs")
+// while a live Xray instance is up.
+func CheckXrayConfig(config string) error {
+	r := bytes.NewReader([]byte(config))
+	conf, err := serial.DecodeJSONConfig(r)
+	if err != nil {
+		return err
+	}
+	_, err = conf.Build()
+	return err
+}
