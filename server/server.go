@@ -267,8 +267,17 @@ func (s *server) Test(ctx context.Context, in *gen.TestReq) (*gen.TestResp, erro
 		defer testInstance.CloseWithTimeout(cancel, 2*time.Second, log.Println, false)
 	}
 
+	needDefault := false
 	outboundTags := in.OutboundTags
-	if *in.UseDefaultOutbound || *in.TestCurrent {
+	if *in.TestCurrent {
+		_, exists := testInstance.Outbound().Outbound("proxy")
+		if !exists {
+			needDefault = true
+		} else {
+			outboundTags = []string{"proxy"}
+		}
+	}
+	if *in.UseDefaultOutbound || needDefault {
 		outbound := testInstance.Outbound().Default()
 		outboundTags = []string{outbound.Tag()}
 	}
@@ -538,7 +547,16 @@ func (s *server) SpeedTest(ctx context.Context, in *gen.SpeedTestRequest) (*gen.
 		defer testInstance.Close()
 	}
 
-	if *in.UseDefaultOutbound || *in.TestCurrent {
+	needDefault := false
+	if *in.TestCurrent {
+		_, exists := testInstance.Outbound().Outbound("proxy")
+		if !exists {
+			needDefault = true
+		} else {
+			outboundTags = []string{"proxy"}
+		}
+	}
+	if *in.UseDefaultOutbound || needDefault {
 		outbound := testInstance.Outbound().Default()
 		outboundTags = []string{outbound.Tag()}
 	}
