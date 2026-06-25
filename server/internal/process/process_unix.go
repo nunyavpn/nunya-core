@@ -12,6 +12,16 @@ import (
 	"syscall"
 )
 
+// startChild launches the extra process, dropped to the unprivileged real user
+// when the Core is setuid-root (see applyPrivilegeDrop), else as-is.
+func startChild(path string, args []string, noOut bool) (running, error) {
+	cmd := newCmd(path, args, noOut)
+	if err := applyPrivilegeDrop(cmd); err != nil {
+		return nil, err
+	}
+	return startCmd(cmd)
+}
+
 // applyPrivilegeDrop makes the child run as the unprivileged real user.
 //
 // The Core is a setuid-root binary, so when an unprivileged user launches it

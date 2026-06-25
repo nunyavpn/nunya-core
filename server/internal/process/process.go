@@ -9,13 +9,23 @@ import (
 	"github.com/sagernet/sing/common/atomic"
 )
 
+const extraCorePrefix = "Extra Core"
+
 type Process struct {
 	path        string
 	args        []string
 	noOut       bool
 	cleanupPath string
-	cmd         *exec.Cmd
+	run         running
 	stopped     atomic.Bool
+}
+
+// running is the minimal handle Process needs to a started child. The normal
+// launch (plain exec, or unix setuid) is backed by *exec.Cmd; the elevated
+// Windows launch (CreateProcessWithTokenW) is backed by a raw process handle.
+type running interface {
+	Wait() error
+	Kill() error
 }
 
 func NewProcess(path string, args []string, noOut bool) *Process {
@@ -31,32 +41,21 @@ func (p *Process) SetCleanupPath(path string) {
 }
 
 func (p *Process) Start() error {
-	p.cmd = exec.Command(p.path, p.args...)
-
-	p.cmd.Stdout = &pipeLogger{prefix: "Extra Core", noOut: p.noOut}
-	p.cmd.Stderr = &pipeLogger{prefix: "Extra Core", noOut: p.noOut}
-
-	p.cmd.Env = childEnv()
-
 	// The Core may run elevated (setuid-root on unix, UAC-elevated on Windows),
 	// but the extra process is an arbitrary user-supplied binary that must not
-	// inherit those privileges. Drop to the unprivileged real user, or refuse
-	// to start it at all.
-	if err := applyPrivilegeDrop(p.cmd); err != nil {
-		p.cleanup()
-		return err
-	}
-
-	err := p.cmd.Start()
+	// inherit those privileges. startChild drops to the unprivileged real user,
+	// or refuses to start it at all.
+	run, err := startChild(p.path, p.args, p.noOut)
 	if err != nil {
 		p.cleanup()
 		return err
 	}
+	p.run = run
 	p.stopped.Store(false)
 
 	go func() {
 		fmt.Println(p.path, ":", "process started, waiting for it to end")
-		_ = p.cmd.Wait()
+		_ = p.run.Wait()
 		if !p.stopped.Load() {
 			fmt.Println("Extra process exited unexpectedly")
 		}
@@ -67,9 +66,36 @@ func (p *Process) Start() error {
 
 func (p *Process) Stop() {
 	p.stopped.Store(true)
-	_ = p.cmd.Process.Kill()
+	if p.run != nil {
+		_ = p.run.Kill()
+	}
 	p.cleanup()
 }
+
+// newCmd builds the exec.Cmd shared by the launch paths that go through Go's
+// os/exec: stdout/stderr funnel into the Throne log, and the child environment
+// has THRONE* stripped. Platform-specific privilege handling (unix setuid) is
+// layered on by startChild before the command is started.
+func newCmd(path string, args []string, noOut bool) *exec.Cmd {
+	cmd := exec.Command(path, args...)
+	cmd.Stdout = &pipeLogger{prefix: extraCorePrefix, noOut: noOut}
+	cmd.Stderr = &pipeLogger{prefix: extraCorePrefix, noOut: noOut}
+	cmd.Env = childEnv()
+	return cmd
+}
+
+// startCmd starts cmd and wraps it as a running handle.
+func startCmd(cmd *exec.Cmd) (running, error) {
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return &cmdRunner{cmd: cmd}, nil
+}
+
+type cmdRunner struct{ cmd *exec.Cmd }
+
+func (c *cmdRunner) Wait() error { return c.cmd.Wait() }
+func (c *cmdRunner) Kill() error { return c.cmd.Process.Kill() }
 
 // cleanup removes the bound path, if any. It is safe to call multiple times and
 // from multiple goroutines (RemoveAll on a missing path is a no-op, and unlink
