@@ -3,6 +3,7 @@ package main
 import (
 	"ThroneCore/gen"
 	"ThroneCore/internal/boxbox"
+	"ThroneCore/internal/boxdns"
 	"ThroneCore/internal/boxmain"
 	"ThroneCore/internal/process"
 	"ThroneCore/internal/sys"
@@ -27,6 +28,8 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/service"
 	"github.com/xtls/xray-core/core"
+	xthrone "github.com/xtls/xray-core/throne"
+	xinternet "github.com/xtls/xray-core/transport/internet"
 )
 
 var boxInstance *boxbox.Box
@@ -45,6 +48,19 @@ type server struct {
 // To returns a pointer to the given value.
 func To[T any](v T) *T {
 	return &v
+}
+
+// defaultInterfaceFinder reports the physical default-route interface name via
+// the always-on, cross-platform boxdns monitor, or "" when unavailable. It is
+// passed to the live Xray instance so egress dials bind to that interface
+// (replacing the config-baked sockopt.interface + loopback bridge). It shares
+// the same source as the GetDefaultInterface RPC, so both stay consistent.
+func defaultInterfaceFinder() string {
+	ifc := boxdns.DefaultInterface()
+	if ifc == nil {
+		return ""
+	}
+	return ifc.Name
 }
 
 func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.ErrorResp, _ error) {
@@ -106,6 +122,24 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 		xrayInstance, err = xray.CreateXrayInstance(*in.XrayConfig)
 		if err != nil {
 			return
+		}
+		// Wire egress on the instance after creation, before Start: a dynamic
+		// interface finder for auto interface binding, and (when an address is
+		// provided) a throne-dns resolver that resolves outbound server domains
+		// through sing-box's loopback DNS. Test/validation instances get only the
+		// interface finder (so their egress still leaves the physical NIC instead
+		// of looping through an active TUN) and never the DNS resolver, so their
+		// outbound domains fall back to default resolution.
+		xrayInstance.SetInterfaceFinder(defaultInterfaceFinder)
+		if dnsAddr := in.GetXrayOutboundDnsAddress(); dnsAddr != "" {
+			resolver, e := xthrone.NewResolver(dnsAddr)
+			if e != nil {
+				err = E.Cause(e, "failed to create Xray outbound DNS resolver")
+				xrayInstance.Close()
+				xrayInstance = nil
+				return
+			}
+			xrayInstance.SetOutboundDNS(resolver, xinternet.ParseDomainStrategy(in.GetXrayOutboundDnsStrategy()))
 		}
 		err = xrayInstance.Start()
 		if err != nil {
@@ -255,6 +289,9 @@ func (s *server) Test(ctx context.Context, in *gen.TestReq) (*gen.TestResp, erro
 			if err != nil {
 				return nil, err
 			}
+			// Interface finder only (no DNS): keep test egress on the physical
+			// NIC so it doesn't loop through an active TUN. See Start().
+			xrayTestIntance.SetInterfaceFinder(defaultInterfaceFinder)
 			err = xrayTestIntance.Start()
 			if err != nil {
 				return nil, err
@@ -341,6 +378,9 @@ func (s *server) IPTest(ctx context.Context, in *gen.IPTestRequest) (*gen.IPTest
 		if err != nil {
 			return nil, err
 		}
+		// Interface finder only (no DNS): keep test egress on the physical
+		// NIC so it doesn't loop through an active TUN. See Start().
+		xrayTestInstance.SetInterfaceFinder(defaultInterfaceFinder)
 		err = xrayTestInstance.Start()
 		if err != nil {
 			return nil, err
@@ -536,6 +576,9 @@ func (s *server) SpeedTest(ctx context.Context, in *gen.SpeedTestRequest) (*gen.
 			if err != nil {
 				return nil, err
 			}
+			// Interface finder only (no DNS): keep test egress on the physical
+			// NIC so it doesn't loop through an active TUN. See Start().
+			xrayTestIntance.SetInterfaceFinder(defaultInterfaceFinder)
 			err = xrayTestIntance.Start()
 			if err != nil {
 				return nil, err

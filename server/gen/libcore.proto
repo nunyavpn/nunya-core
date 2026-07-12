@@ -47,6 +47,13 @@ message LoadConfigReq {
   optional bool need_xray = 9 [default = false];
   optional string xray_config = 10 [default = ""];
   optional string tun_ipv4_cidr = 11 [default = ""];
+  // Address of sing-box's loopback DNS-in (e.g. "127.0.0.1:15353") used by the
+  // live Xray instance to resolve outbound server domains. Empty => no outbound
+  // DNS wiring (test/validation fallback).
+  optional string xray_outbound_dns_address = 12 [default = ""];
+  // Xray-style domain strategy (e.g. "UseIP", "UseIPv4v6") applied to outbound
+  // domain resolution when xray_outbound_dns_address is set.
+  optional string xray_outbound_dns_strategy = 13 [default = ""];
 }
 
 message URLTestResp {
