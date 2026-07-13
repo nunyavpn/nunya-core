@@ -50,8 +50,12 @@ func parseConfig(ctx context.Context, configContent []byte) (*option.Options, er
 }
 
 func Create(configContent []byte) (*boxbox.Box, context.CancelFunc, error) {
-	preRun(nil, nil)
-	options, err := parseConfig(globalCtx, configContent)
+	// Build a fresh, independent context per call. Concurrent Create calls (e.g.
+	// several parallel URL tests) must not share one service.Registry, or their
+	// boxes clobber each other's OutboundManager and BatchURLTest panics with
+	// "no outbound with tag ... found". See newBoxContext.
+	ctx := newBoxContext()
+	options, err := parseConfig(ctx, configContent)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -61,7 +65,7 @@ func Create(configContent []byte) (*boxbox.Box, context.CancelFunc, error) {
 		}
 		options.Log.DisableColor = true
 	}
-	ctx, cancel := context.WithCancel(globalCtx)
+	ctx, cancel := context.WithCancel(ctx)
 	instance, err := boxbox.New(boxbox.Options{
 		Context: ctx,
 		Options: *options,

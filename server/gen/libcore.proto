@@ -72,6 +72,11 @@ message TestReq {
   optional int32 test_timeout_ms = 7 [default = 0];
   optional bool need_xray = 8 [default = false];
   optional string xray_config = 9 [default = ""];
+  // Opaque, standalone Xray full configs, one per profile. Each becomes its own
+  // Xray instance whose socks inbound backs a socks outbound already present in
+  // `config`; unlike `xray_config` (the single merged Xray for regular profiles)
+  // these are not merged. Lets many xray-full profiles share one sing-box box.
+  repeated string xray_full_configs = 10;
 }
 
 message TestResp {
@@ -135,6 +140,8 @@ message SpeedTestRequest {
   optional int32 country_concurrency = 11 [default = 0];
   optional bool need_xray = 12 [default = false];
   optional string xray_config = 13 [default = ""];
+  // See TestReq.xray_full_configs.
+  repeated string xray_full_configs = 14;
 }
 
 message SpeedTestResult {
@@ -182,6 +189,8 @@ message IPTestRequest {
   optional int32 test_timeout_ms = 5 [default = 0];
   optional bool need_xray = 6 [default = false];
   optional string xray_config = 7 [default = ""];
+  // See TestReq.xray_full_configs.
+  repeated string xray_full_configs = 8;
 }
 
 message IPTestResp {

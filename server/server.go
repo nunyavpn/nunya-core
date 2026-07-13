@@ -63,6 +63,38 @@ func defaultInterfaceFinder() string {
 	return ifc.Name
 }
 
+// startXrayFullConfigs brings up one Xray instance per opaque full config, each
+// bound to the physical egress interface (same as the single-xray test path).
+// The tests fold many xray-full profiles into one sing-box box whose socks
+// outbounds point at these instances (see TestReq.xray_full_configs), so they run
+// together for the duration of the batch. On any failure the instances already
+// started are torn down; on success the caller owns them and must close them via
+// closeXrayInstances.
+func startXrayFullConfigs(configs []string) ([]*core.Instance, error) {
+	instances := make([]*core.Instance, 0, len(configs))
+	for _, cfg := range configs {
+		inst, err := xray.CreateXrayInstance(cfg)
+		if err != nil {
+			closeXrayInstances(instances)
+			return nil, err
+		}
+		inst.SetInterfaceFinder(defaultInterfaceFinder)
+		if err := inst.Start(); err != nil {
+			_ = inst.Close()
+			closeXrayInstances(instances)
+			return nil, err
+		}
+		instances = append(instances, inst)
+	}
+	return instances, nil
+}
+
+func closeXrayInstances(instances []*core.Instance) {
+	for _, inst := range instances {
+		_ = inst.Close()
+	}
+}
+
 func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.ErrorResp, _ error) {
 	var err error
 
@@ -300,6 +332,11 @@ func (s *server) Test(ctx context.Context, in *gen.TestReq) (*gen.TestResp, erro
 				common.Must(xrayTestIntance.Close())
 			}() // crash in case it does not close properly
 		}
+		fullXray, ferr := startXrayFullConfigs(in.XrayFullConfigs)
+		if ferr != nil {
+			return nil, ferr
+		}
+		defer closeXrayInstances(fullXray)
 		testInstance, cancel, err = boxmain.Create([]byte(*in.Config))
 		if err != nil {
 			return nil, err
@@ -389,6 +426,11 @@ func (s *server) IPTest(ctx context.Context, in *gen.IPTestRequest) (*gen.IPTest
 			common.Must(xrayTestInstance.Close())
 		}()
 	}
+	fullXray, ferr := startXrayFullConfigs(in.XrayFullConfigs)
+	if ferr != nil {
+		return nil, ferr
+	}
+	defer closeXrayInstances(fullXray)
 	testInstance, cancel, err = boxmain.Create([]byte(*in.Config))
 	if err != nil {
 		return nil, err
@@ -585,6 +627,11 @@ func (s *server) SpeedTest(ctx context.Context, in *gen.SpeedTestRequest) (*gen.
 			}
 			defer xrayTestIntance.Close()
 		}
+		fullXray, ferr := startXrayFullConfigs(in.XrayFullConfigs)
+		if ferr != nil {
+			return nil, ferr
+		}
+		defer closeXrayInstances(fullXray)
 		testInstance, cancel, err = boxmain.Create([]byte(*in.Config))
 		if err != nil {
 			return nil, err
