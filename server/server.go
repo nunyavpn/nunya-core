@@ -25,6 +25,7 @@ import (
 	"github.com/sagernet/sing-box/experimental/clashapi"
 	"github.com/sagernet/sing-box/experimental/clashapi/trafficontrol"
 	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/service"
 	"github.com/xtls/xray-core/core"
@@ -63,6 +64,31 @@ func defaultInterfaceFinder() string {
 	return ifc.Name
 }
 
+// init keeps the live Xray instance's egress bound to the current default-route
+// interface. Throne's always-on boxdns monitor fires this callback whenever the
+// default interface changes (e.g. a network switch), and we push the new name
+// onto whichever Xray instance is currently live, so new dials follow the move —
+// the runtime counterpart to the initial SetEgressInterface at Start. Test and
+// validation instances are short-lived and set their interface once at creation,
+// so they are intentionally not tracked here.
+func init() {
+	m := boxdns.DnsManagerInstance
+	if m == nil || m.Monitor == nil {
+		return
+	}
+	m.Monitor.RegisterCallback(func(ifc *control.Interface, _ int) {
+		inst := xrayInstance
+		if inst == nil {
+			return
+		}
+		name := ""
+		if ifc != nil {
+			name = ifc.Name
+		}
+		inst.SetEgressInterface(name)
+	})
+}
+
 // startXrayFullConfigs brings up one Xray instance per opaque full config, each
 // bound to the physical egress interface (same as the single-xray test path).
 // The tests fold many xray-full profiles into one sing-box box whose socks
@@ -78,7 +104,7 @@ func startXrayFullConfigs(configs []string) ([]*core.Instance, error) {
 			closeXrayInstances(instances)
 			return nil, err
 		}
-		inst.SetInterfaceFinder(defaultInterfaceFinder)
+		inst.SetEgressInterface(defaultInterfaceFinder())
 		if err := inst.Start(); err != nil {
 			_ = inst.Close()
 			closeXrayInstances(instances)
@@ -162,7 +188,7 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 		// interface finder (so their egress still leaves the physical NIC instead
 		// of looping through an active TUN) and never the DNS resolver, so their
 		// outbound domains fall back to default resolution.
-		xrayInstance.SetInterfaceFinder(defaultInterfaceFinder)
+		xrayInstance.SetEgressInterface(defaultInterfaceFinder())
 		if dnsAddr := in.GetXrayOutboundDnsAddress(); dnsAddr != "" {
 			resolver, e := xthrone.NewResolver(dnsAddr)
 			if e != nil {
@@ -323,7 +349,7 @@ func (s *server) Test(ctx context.Context, in *gen.TestReq) (*gen.TestResp, erro
 			}
 			// Interface finder only (no DNS): keep test egress on the physical
 			// NIC so it doesn't loop through an active TUN. See Start().
-			xrayTestIntance.SetInterfaceFinder(defaultInterfaceFinder)
+			xrayTestIntance.SetEgressInterface(defaultInterfaceFinder())
 			err = xrayTestIntance.Start()
 			if err != nil {
 				return nil, err
@@ -417,7 +443,7 @@ func (s *server) IPTest(ctx context.Context, in *gen.IPTestRequest) (*gen.IPTest
 		}
 		// Interface finder only (no DNS): keep test egress on the physical
 		// NIC so it doesn't loop through an active TUN. See Start().
-		xrayTestInstance.SetInterfaceFinder(defaultInterfaceFinder)
+		xrayTestInstance.SetEgressInterface(defaultInterfaceFinder())
 		err = xrayTestInstance.Start()
 		if err != nil {
 			return nil, err
@@ -620,7 +646,7 @@ func (s *server) SpeedTest(ctx context.Context, in *gen.SpeedTestRequest) (*gen.
 			}
 			// Interface finder only (no DNS): keep test egress on the physical
 			// NIC so it doesn't loop through an active TUN. See Start().
-			xrayTestIntance.SetInterfaceFinder(defaultInterfaceFinder)
+			xrayTestIntance.SetEgressInterface(defaultInterfaceFinder())
 			err = xrayTestIntance.Start()
 			if err != nil {
 				return nil, err
