@@ -12,14 +12,14 @@ require (
 	github.com/sagernet/sing-tun v0.8.12-0.20260727151122-3a09076491df
 	github.com/spf13/cobra v1.10.2
 	github.com/tailscale/go-winio v0.0.0-20231025203758-c4f33415bf55
-	github.com/xtls/xray-core v1.260327.1-0.20260627131803-45cf2898ab12
+	github.com/xtls/xray-core v1.260327.1-0.20260728075948-5ca6f4b7d4dc
 	golang.org/x/crypto v0.54.0
 	golang.org/x/sys v0.47.0
-	google.golang.org/grpc v1.82.0
+	google.golang.org/grpc v1.82.1
 	google.golang.org/protobuf v1.36.11
 )
 
-replace github.com/xtls/xray-core => github.com/throneproj/xray-core v1.251015.1-0.20260723193033-3729c1ec6943
+replace github.com/xtls/xray-core => github.com/throneproj/xray-core v1.251015.1-0.20260729163158-bf688d2f4712
 
 replace github.com/sagernet/sing-box => github.com/Throneproj/sing-box v1.11.16-0.20260729162327-343820e3c715
 
