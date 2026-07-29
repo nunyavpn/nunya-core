@@ -21,9 +21,9 @@ require (
 
 replace github.com/xtls/xray-core => github.com/throneproj/xray-core v1.251015.1-0.20260723193033-3729c1ec6943
 
-replace github.com/sagernet/sing-box => github.com/Throneproj/sing-box v1.11.16-0.20260729144949-3ff3d3ffe6fe
+replace github.com/sagernet/sing-box => github.com/Throneproj/sing-box v1.11.16-0.20260729162327-343820e3c715
 
-replace github.com/sagernet/wireguard-go => github.com/throneproj/wireguard-go v0.0.0-20260720120454-9a1d1fe156e0
+replace github.com/sagernet/wireguard-go => github.com/throneproj/wireguard-go v0.0.0-20260729162147-5f31c6dd9a73
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
