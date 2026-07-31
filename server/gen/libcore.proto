@@ -26,6 +26,9 @@ service LibcoreService {
   rpc QueryIPTest(EmptyReq) returns (QueryIPTestResponse);
   //
   rpc GenWgKeyPair(EmptyReq) returns (GenWgKeyPairResponse);
+  //
+  rpc QueryAutoSelectors(EmptyReq) returns (QueryAutoSelectorsResponse);
+  rpc AutoSelectorAction(AutoSelectorActionRequest) returns (ErrorResp);
 }
 
 message EmptyReq {}
@@ -54,6 +57,14 @@ message LoadConfigReq {
   // Xray-style domain strategy (e.g. "UseIP", "UseIPv4v6") applied to outbound
   // domain resolution when xray_outbound_dns_address is set.
   optional string xray_outbound_dns_strategy = 13 [default = ""];
+  // Keep the Xray instance cold until something dials it. Set for auto-selector
+  // profiles, whose pools can hold Xray members that only get probed once a
+  // bench cycle: the core takes over the loopback ports sing-box was told to
+  // dial and builds the instance on the first connection instead.
+  optional bool xray_lazy_start = 14 [default = false];
+  // Seconds without gated traffic before a lazily started instance is shut down
+  // again. 0 keeps it resident once it has started.
+  optional int32 xray_idle_seconds = 15 [default = 0];
 }
 
 message URLTestResp {
@@ -205,4 +216,71 @@ message GenWgKeyPairResponse {
   optional string private_key = 1 [default = ""];
   optional string public_key = 2 [default = ""];
   optional string error = 3 [default = ""];
+}
+
+// One member of a running auto-selector group. Everything the UI needs to
+// explain why a server was picked, skipped or demoted is carried here — the
+// selector must never look like a silent black box.
+message AutoSelectorMember {
+  optional string tag = 1 [default = ""];
+  optional int32 rank = 2 [default = 0];
+  // ok | degraded | untested | dead | cooldown
+  optional string state = 3 [default = ""];
+  optional bool selected = 4 [default = false];
+  optional bool selected_udp = 5 [default = false];
+  optional bool qualified = 6 [default = false];
+  // true while the member sits in the fast-probe tier
+  optional bool active = 7 [default = false];
+  optional int32 average_ms = 8 [default = 0];
+  optional int32 deviation_ms = 9 [default = 0];
+  optional int32 min_ms = 10 [default = 0];
+  optional int32 max_ms = 11 [default = 0];
+  optional int32 samples = 12 [default = 0];
+  optional int32 failures = 13 [default = 0];
+  optional int32 probes = 14 [default = 0];
+  optional int32 dial_total = 15 [default = 0];
+  optional int32 dial_fail = 16 [default = 0];
+  optional int64 last_ok_ms = 17 [default = 0];
+  optional int64 last_probe_ms = 18 [default = 0];
+  optional int64 cooldown_until_ms = 19 [default = 0];
+  optional string last_error = 20 [default = ""];
+}
+
+message AutoSelectorStatus {
+  optional string tag = 1 [default = ""];
+  // starting | probing | ready | suspended
+  optional string phase = 2 [default = ""];
+  optional string selected = 3 [default = ""];
+  optional string selected_udp = 4 [default = ""];
+  optional bool balance = 5 [default = false];
+  optional string balance_mode = 6 [default = ""];
+  // suspended => the core believes the LOCAL network is down and has frozen the
+  // ranking. Consumers must not treat members as broken while this is set.
+  optional bool suspended = 7 [default = false];
+  optional int64 suspended_since_ms = 8 [default = 0];
+  optional int32 members_total = 9 [default = 0];
+  optional int32 members_probed = 10 [default = 0];
+  optional int32 members_alive = 11 [default = 0];
+  optional int32 members_qualified = 12 [default = 0];
+  optional int32 members_cooldown = 13 [default = 0];
+  optional int32 probes_in_flight = 14 [default = 0];
+  optional int32 rounds_completed = 15 [default = 0];
+  optional int64 last_round_ms = 16 [default = 0];
+  optional int64 next_round_ms = 17 [default = 0];
+  optional int64 last_switch_ms = 18 [default = 0];
+  optional string last_switch_reason = 19 [default = ""];
+  repeated AutoSelectorMember members = 20;
+}
+
+// Idempotent snapshot: unlike QueryStats this never clears core-side counters,
+// so it is safe to poll from more than one consumer.
+message QueryAutoSelectorsResponse {
+  repeated AutoSelectorStatus groups = 1;
+}
+
+message AutoSelectorActionRequest {
+  optional string tag = 1 [default = ""];
+  // recheck = force a full sweep now; select = pin the group to `member`
+  optional string action = 2 [default = ""];
+  optional string member = 3 [default = ""];
 }

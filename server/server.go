@@ -39,8 +39,23 @@ var needUnsetDNS bool
 var instanceCancel context.CancelFunc
 var debug bool
 
-// Xray core
+// Xray core. Exactly one of these is set while a profile runs: xrayInstance for
+// an eagerly started sidecar, xrayGate when the profile asked for it to stay
+// cold until something dials it (see xray.Gate).
 var xrayInstance *core.Instance
+var xrayGate *xray.Gate
+
+// liveXrayInstance is whichever Xray instance is up right now, or nil. A gated
+// sidecar has none between activations.
+func liveXrayInstance() *core.Instance {
+	if xrayInstance != nil {
+		return xrayInstance
+	}
+	if xrayGate != nil {
+		return xrayGate.Instance()
+	}
+	return nil
+}
 
 type server struct {
 	gen.UnimplementedLibcoreServiceServer
@@ -77,7 +92,7 @@ func init() {
 		return
 	}
 	m.Monitor.RegisterCallback(func(ifc *control.Interface, _ int) {
-		inst := xrayInstance
+		inst := liveXrayInstance()
 		if inst == nil {
 			return
 		}
@@ -113,6 +128,19 @@ func startXrayFullConfigs(configs []string) ([]*core.Instance, error) {
 		instances = append(instances, inst)
 	}
 	return instances, nil
+}
+
+// closeXray tears down whichever live sidecar the profile brought up, gated or
+// eager, and leaves both slots empty.
+func closeXray() {
+	if xrayGate != nil {
+		xrayGate.Close()
+		xrayGate = nil
+	}
+	if xrayInstance != nil {
+		xrayInstance.Close()
+		xrayInstance = nil
+	}
 }
 
 func closeXrayInstances(instances []*core.Instance) {
@@ -177,10 +205,6 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 	}
 
 	if *in.NeedXray {
-		xrayInstance, err = xray.CreateXrayInstance(*in.XrayConfig)
-		if err != nil {
-			return
-		}
 		// Wire egress on the instance after creation, before Start: a dynamic
 		// interface finder for auto interface binding, and (when an address is
 		// provided) a throne-dns resolver that resolves outbound server domains
@@ -188,21 +212,44 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 		// interface finder (so their egress still leaves the physical NIC instead
 		// of looping through an active TUN) and never the DNS resolver, so their
 		// outbound domains fall back to default resolution.
-		xrayInstance.SetEgressInterface(defaultInterfaceFinder())
-		if dnsAddr := in.GetXrayOutboundDnsAddress(); dnsAddr != "" {
+		dnsAddr := in.GetXrayOutboundDnsAddress()
+		dnsStrategy := in.GetXrayOutboundDnsStrategy()
+		prepareXray := func(instance *core.Instance) error {
+			instance.SetEgressInterface(defaultInterfaceFinder())
+			if dnsAddr == "" {
+				return nil
+			}
 			resolver, e := xthrone.NewResolver(dnsAddr)
 			if e != nil {
-				err = E.Cause(e, "failed to create Xray outbound DNS resolver")
+				return E.Cause(e, "failed to create Xray outbound DNS resolver")
+			}
+			instance.SetOutboundDNS(resolver, xinternet.ParseDomainStrategy(dnsStrategy))
+			return nil
+		}
+
+		if in.GetXrayLazyStart() {
+			xrayGate, err = xray.StartGate(*in.XrayConfig,
+				time.Duration(in.GetXrayIdleSeconds())*time.Second, prepareXray)
+			if err != nil {
+				xrayGate = nil
+				return
+			}
+		} else {
+			xrayInstance, err = xray.CreateXrayInstance(*in.XrayConfig)
+			if err != nil {
+				return
+			}
+			if err = prepareXray(xrayInstance); err != nil {
 				xrayInstance.Close()
 				xrayInstance = nil
 				return
 			}
-			xrayInstance.SetOutboundDNS(resolver, xinternet.ParseDomainStrategy(in.GetXrayOutboundDnsStrategy()))
-		}
-		err = xrayInstance.Start()
-		if err != nil {
-			xrayInstance = nil
-			return
+			err = xrayInstance.Start()
+			if err != nil {
+				xrayInstance.Close()
+				xrayInstance = nil
+				return
+			}
 		}
 	}
 
@@ -212,10 +259,7 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 			extraProcess.Stop()
 			extraProcess = nil
 		}
-		if xrayInstance != nil {
-			xrayInstance.Close()
-			xrayInstance = nil
-		}
+		closeXray()
 		return
 	}
 
@@ -227,10 +271,7 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 				extraProcess.Stop()
 				extraProcess = nil
 			}
-			if xrayInstance != nil {
-				xrayInstance.Close()
-				xrayInstance = nil
-			}
+			closeXray()
 		}
 
 		tunCIDR := in.GetTunIpv4Cidr()
@@ -288,10 +329,7 @@ func (s *server) Stop(ctx context.Context, in *gen.EmptyReq) (out *gen.ErrorResp
 		extraProcess = nil
 	}
 
-	if xrayInstance != nil {
-		xrayInstance.Close()
-		xrayInstance = nil
-	}
+	closeXray()
 
 	return
 }

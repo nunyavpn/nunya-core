@@ -207,6 +207,28 @@ func dispatch(methodName string, payload []byte) ([]byte, error) {
 		}
 		return proto.Marshal(resp)
 
+	case "QueryAutoSelectors":
+		req := &gen.EmptyReq{}
+		if err := proto.Unmarshal(payload, req); err != nil {
+			return nil, err
+		}
+		resp, err := s.QueryAutoSelectors(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		return proto.Marshal(resp)
+
+	case "AutoSelectorAction":
+		req := &gen.AutoSelectorActionRequest{}
+		if err := proto.Unmarshal(payload, req); err != nil {
+			return nil, err
+		}
+		resp, err := s.AutoSelectorAction(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		return proto.Marshal(resp)
+
 	case "IsPrivileged":
 		req := &gen.EmptyReq{}
 		if err := proto.Unmarshal(payload, req); err != nil {
