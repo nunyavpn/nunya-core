@@ -13,12 +13,77 @@ import (
 	"os"
 	"runtime"
 	runtimeDebug "runtime/debug"
+	"runtime/metrics"
+	"runtime/pprof"
 	"syscall"
 	"time"
 
 	_ "ThroneCore/internal/distro/all"
 	C "github.com/sagernet/sing-box/constant"
 )
+
+const (
+	// Threshold is live heap after a forced GC, kept under memoryLimit:
+	// that much surviving under the soft limit means the GC is thrashing
+	memoryLimit           = 2 * 1024 * 1024 * 1024 // 2GB
+	memoryPanicThreshold  = 1536 * 1024 * 1024     // 1.5GB
+	memoryCheckInterval   = 2 * time.Second
+	memoryForcedGCBackoff = 30 * time.Second
+)
+
+// liveHeap avoids HeapAlloc, which also counts unswept garbage and sawtooths
+// up to the GC target (live set x GOGC, capped by memoryLimit),
+// so a bare threshold on it fires on a perfectly healthy heap
+func liveHeap() uint64 {
+	sample := []metrics.Sample{{Name: "/gc/heap/live:bytes"}}
+	metrics.Read(sample)
+	return sample[0].Value.Uint64()
+}
+
+// watchMemory takes the core down when the live heap runs away
+func watchMemory() {
+	for {
+		time.Sleep(memoryCheckInterval)
+
+		if liveHeap() < memoryPanicThreshold {
+			continue
+		}
+
+		// The metric is only as fresh as the last cycle, and one that ran
+		// during a burst can mark short-lived objects as live
+		runtimeDebug.FreeOSMemory()
+		live := liveHeap()
+		if live < memoryPanicThreshold {
+			// FreeOSMemory is stop-the-world, do not repeat it every tick
+			// while a busy core legitimately sits near the threshold
+			time.Sleep(memoryForcedGCBackoff)
+			continue
+		}
+
+		log.Printf("memory watchdog: %d MiB live after a forced GC, %d goroutines",
+			live>>20, runtime.NumGoroutine())
+		if path, err := writeHeapProfile(); err != nil {
+			log.Printf("memory watchdog: could not write heap profile: %v", err)
+		} else {
+			log.Printf("memory watchdog: heap profile written to %s", path)
+		}
+		panic(fmt.Sprintf("Live heap reached %d MiB after a forced GC, this is not normal", live>>20))
+	}
+}
+
+func writeHeapProfile() (string, error) {
+	// Core runs privileged: a clock-derived name is guessable, and a symlink
+	// planted at that path turns this into a root-owned write anywhere
+	f, err := os.CreateTemp("", "throne-core-heap-*.pprof")
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if err = pprof.WriteHeapProfile(f); err != nil {
+		return "", err
+	}
+	return f.Name(), f.Sync()
+}
 
 func RunCore() {
 	socketName := os.Getenv("THRONE_CORE_SOCKET")
@@ -81,17 +146,8 @@ func main() {
 	fmt.Println("sing-box:", C.Version)
 	fmt.Println("Xray-core:", core.Version())
 	fmt.Println()
-	runtimeDebug.SetMemoryLimit(2 * 1024 * 1024 * 1024) // 2GB
-	go func() {
-		var memStats runtime.MemStats
-		for {
-			time.Sleep(2 * time.Second)
-			runtime.ReadMemStats(&memStats)
-			if memStats.HeapAlloc > 1.5*1024*1024*1024 {
-				panic("Memory has reached 1.5 GB, this is not normal")
-			}
-		}
-	}()
+	runtimeDebug.SetMemoryLimit(memoryLimit)
+	go watchMemory()
 
 	test_utils.TestCtx, test_utils.CancelTests = context.WithCancel(context.Background())
 	RunCore()
