@@ -43,6 +43,7 @@ func autoSelectorStatusToProto(status group.AutoSelectorStatus) *gen.AutoSelecto
 		Phase:            To(status.Phase),
 		Selected:         To(status.Selected),
 		SelectedUdp:      To(status.SelectedUDP),
+		Pinned:           To(status.Pinned),
 		Balance:          To(status.Balance),
 		BalanceMode:      To(status.BalanceMode),
 		Suspended:        To(status.Suspended),
@@ -122,10 +123,9 @@ func (s *server) AutoSelectorAction(ctx context.Context, in *gen.AutoSelectorAct
 			selector.CheckOutbounds()
 		}
 	case "select":
+		// An empty member releases the pin and hands the group back to automatic
+		// selection, so the UI needs no second action for it.
 		member := in.GetMember()
-		if member == "" {
-			return &gen.ErrorResp{Error: To("select requires a member")}, nil
-		}
 		for _, selector := range targets {
 			if !selector.SelectOutbound(member) {
 				return &gen.ErrorResp{Error: To("no member " + member + " in group " + selector.Tag())}, nil

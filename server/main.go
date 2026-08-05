@@ -138,9 +138,9 @@ func RunCore() {
 func main() {
 	defer func() {
 		if err := recover(); err != nil {
-			fmt.Println("Core panicked:")
-			fmt.Println(err)
-			os.Exit(0)
+			// The exit code is all the GUI has to tell a panic from a clean stop.
+			fmt.Fprintf(os.Stderr, "Core panicked: %v\n%s\n", err, runtimeDebug.Stack())
+			os.Exit(2)
 		}
 	}()
 	fmt.Println("sing-box:", C.Version)

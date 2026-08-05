@@ -252,6 +252,9 @@ message AutoSelectorStatus {
   optional string phase = 2 [default = ""];
   optional string selected = 3 [default = ""];
   optional string selected_udp = 4 [default = ""];
+  // The member a user pinned by hand, empty when fully automatic. Differs from
+  // `selected` whenever the pinned member is not currently healthy.
+  optional string pinned = 21 [default = ""];
   optional bool balance = 5 [default = false];
   optional string balance_mode = 6 [default = ""];
   // suspended => the core believes the LOCAL network is down and has frozen the

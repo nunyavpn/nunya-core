@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	runtimeDebug "runtime/debug"
 	"sync"
 
 	"google.golang.org/protobuf/proto"
@@ -82,6 +83,14 @@ func runDispatch(conn net.Conn) {
 
 		// Dispatch concurrently so long-running calls don't block the reader.
 		go func(id uint32, method string, pl []byte) {
+			// main()'s recover only covers the main goroutine, so without this
+			// one bad request takes the whole core down.
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("panic in %s: %v\n%s", method, r, runtimeDebug.Stack())
+					writeResponse(id, 1, []byte(fmt.Sprintf("core panic in %s: %v", method, r)))
+				}
+			}()
 			respData, dispatchErr := dispatch(method, pl)
 			if dispatchErr != nil {
 				writeResponse(id, 1, []byte(dispatchErr.Error()))
