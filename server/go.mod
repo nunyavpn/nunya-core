@@ -7,8 +7,8 @@ require (
 	github.com/dustin/go-humanize v1.0.1
 	github.com/gofrs/uuid/v5 v5.4.0
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
-	github.com/sagernet/sing v0.8.12-0.20260726145744-ef2df370afca
-	github.com/sagernet/sing-box v1.13.15
+	github.com/sagernet/sing v0.8.12
+	github.com/sagernet/sing-box v1.13.16
 	github.com/sagernet/sing-tun v0.8.12-0.20260727151122-3a09076491df
 	github.com/spf13/cobra v1.10.2
 	github.com/tailscale/go-winio v0.0.0-20231025203758-c4f33415bf55
@@ -21,9 +21,9 @@ require (
 
 replace github.com/xtls/xray-core => github.com/throneproj/xray-core v1.251015.1-0.20260729163158-bf688d2f4712
 
-replace github.com/sagernet/sing-box => github.com/Throneproj/sing-box v1.11.16-0.20260805220312-d910eaf38e3c
+replace github.com/sagernet/sing-box => github.com/Throneproj/sing-box v1.11.16-0.20260805224723-fd4e19523a14
 
-replace github.com/sagernet/wireguard-go => github.com/throneproj/wireguard-go v0.0.0-20260729162147-5f31c6dd9a73
+replace github.com/sagernet/wireguard-go => github.com/throneproj/wireguard-go v0.0.0-20260805224219-00c94c33be81
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
@@ -136,14 +136,14 @@ require (
 	github.com/sagernet/nftables v0.3.0-mod.2 // indirect
 	github.com/sagernet/quic-go v0.59.0-sing-box-mod.5 // indirect
 	github.com/sagernet/sing-mux v0.3.5 // indirect
-	github.com/sagernet/sing-quic v0.6.4-0.20260727025224-43cdc830d7cf // indirect
+	github.com/sagernet/sing-quic v0.6.4-0.20260803041914-d83826c306d7 // indirect
 	github.com/sagernet/sing-shadowsocks v0.2.8 // indirect
 	github.com/sagernet/sing-shadowsocks2 v0.2.1 // indirect
 	github.com/sagernet/sing-shadowtls v0.2.1 // indirect
 	github.com/sagernet/sing-vmess v0.2.8-0.20250909125414-3aed155119a1 // indirect
 	github.com/sagernet/smux v1.5.50-sing-box-mod.1 // indirect
-	github.com/sagernet/tailscale v1.92.4-sing-box-1.13-mod.7 // indirect
-	github.com/sagernet/wireguard-go v0.0.2-beta.1.0.20260224074747-506b7631853c // indirect
+	github.com/sagernet/tailscale v1.92.4-sing-box-1.13-mod.9 // indirect
+	github.com/sagernet/wireguard-go v0.0.4 // indirect
 	github.com/sagernet/ws v0.0.0-20231204124109-acfe8907c854 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/tailscale/certstore v0.1.1-0.20231202035212-d3fa0460f47e // indirect
