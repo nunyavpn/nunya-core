@@ -1,23 +1,28 @@
 package test_utils
 
 import (
-	"ThroneCore/internal"
-	"ThroneCore/internal/boxbox"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing/service"
 	"io"
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"ThroneCore/internal"
+	"ThroneCore/internal/boxbox"
+
+	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing/service"
 )
 
 var SpTQuerier SpeedTestResultQuerier
-var CountryResults CountryTestResults
+var CountryResults resultBuffer[SpeedTestResult]
+
+// How often a running speed test republishes its partial numbers for the GUI.
+const speedtestSampleInterval = 50 * time.Millisecond
 
 type SpeedTestResult struct {
 	Tag           string
@@ -51,26 +56,18 @@ func (s *SpeedTestResultQuerier) storeResult(result *SpeedTestResult) {
 }
 
 func (s *SpeedTestResultQuerier) setIsRunning(isRunning bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.isRunning = isRunning
 }
 
-type CountryTestResults struct {
-	results []*SpeedTestResult
-	mu      sync.Mutex
-}
+// Tallies bytes without keeping them: the sampling loop reads the total mid-copy,
+// which a bytes.Buffer cannot serve safely.
+type countingWriter struct{ n atomic.Int64 }
 
-func (c *CountryTestResults) AddResult(result *SpeedTestResult) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.results = append(c.results, result)
-}
-
-func (c *CountryTestResults) Results() []*SpeedTestResult {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	cp := c.results
-	c.results = nil
-	return cp
+func (w *countingWriter) Write(p []byte) (int, error) {
+	w.n.Add(int64(len(p)))
+	return len(p), nil
 }
 
 func countryTest(ctx context.Context, dialer func(ctx context.Context, network string, address string) (net.Conn, error), res *SpeedTestResult) error {
@@ -86,7 +83,7 @@ func countryTest(ctx context.Context, dialer func(ctx context.Context, network s
 
 func BatchSpeedTest(ctx context.Context, i *boxbox.Box, outboundTags []string, testDl, testUl bool, simpleDL bool, simpleAddress string, timeout time.Duration, countryOnly bool, countryConcurrency int32) []*SpeedTestResult {
 	outbounds := service.FromContext[adapter.OutboundManager](i.Context())
-	results := make([]*SpeedTestResult, 0)
+	results := make([]*SpeedTestResult, 0, len(outboundTags))
 	var queuer chan struct{}
 	wg := &sync.WaitGroup{}
 	if countryOnly {
@@ -97,18 +94,24 @@ func BatchSpeedTest(ctx context.Context, i *boxbox.Box, outboundTags []string, t
 	}
 
 	for _, tag := range outboundTags {
-		select {
-		case <-ctx.Done():
+		// A plain `break` here would leave the select, not the loop.
+		if ctx.Err() != nil {
 			break
-		default:
 		}
-		outbound, exists := outbounds.Outbound(tag)
-		if !exists {
-			panic("no outbound with tag " + tag + " found")
-		}
+
 		res := new(SpeedTestResult)
 		res.Tag = tag
 		results = append(results, res)
+
+		outbound, exists := outbounds.Outbound(tag)
+		if !exists {
+			// Report rather than panic: a tag can vanish between building the box and testing.
+			res.Error = fmt.Errorf("no outbound with tag %s found", tag)
+			if countryOnly {
+				CountryResults.AddResult(res)
+			}
+			continue
+		}
 
 		var err error
 		if countryOnly {
@@ -151,63 +154,68 @@ func simpleDownloadTest(ctx context.Context, dialer func(ctx context.Context, ne
 	if timeout <= 0 {
 		timeout = URLTestTimeout
 	}
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
-				return dialer(ctx, network, addr)
-			},
-		},
-		Timeout: timeout,
-	}
+	client := dialerHTTPClient(dialer, timeout)
 
 	res.ServerName = "N/A"
 	res.ServerCountry = "N/A"
 
-	buf := bytes.NewBuffer(make([]byte, 0, 8*(1<<20)))
 	req, err := http.NewRequestWithContext(ctx, "GET", testURL, nil)
 	if err != nil {
 		return err
 	}
 
 	done := make(chan struct{})
-	var start time.Time
-	var latency int32
+	// Written by the download goroutine while the sampling loop reads them.
+	var counted countingWriter
+	var startNs atomic.Int64
+	var latencyMs atomic.Int32
+	// Only read after <-done, which orders it against the goroutine's write.
+	var downloadErr error
 
 	go func() {
 		defer close(done)
 		reqStart := time.Now()
 		resp, err := client.Do(req)
 		if err != nil {
-			res.Error = err
+			downloadErr = err
 			return
 		}
-		latency = int32(time.Since(reqStart).Milliseconds())
-		start = time.Now()
-		_, _ = io.Copy(buf, resp.Body)
+		defer resp.Body.Close()
+		latencyMs.Store(int32(time.Since(reqStart).Milliseconds()))
+		startNs.Store(time.Now().UnixNano())
+		_, _ = io.Copy(&counted, resp.Body)
 	}()
 
-	ticker := time.NewTicker(time.Millisecond * 50)
+	ticker := time.NewTicker(speedtestSampleInterval)
 	defer ticker.Stop()
 
 	SpTQuerier.setIsRunning(true)
 	defer SpTQuerier.setIsRunning(false)
 
+	// Before the first byte there is no start time, so the rate stays untouched.
+	sample := func() {
+		n := counted.n.Load()
+		if start := startNs.Load(); start != 0 {
+			res.DlSpeed = internal.BrateToStr(internal.CalculateBRate(float64(n), time.Unix(0, start)))
+		}
+		res.DlBytes = n
+		res.Latency = latencyMs.Load()
+		SpTQuerier.storeResult(res)
+	}
+
 	for {
 		select {
 		case <-done:
-			res.DlSpeed = internal.BrateToStr(internal.CalculateBRate(float64(buf.Len()), start))
-			res.DlBytes = int64(buf.Len())
-			res.Latency = latency
-			SpTQuerier.storeResult(res)
-			return nil
+			if downloadErr != nil {
+				res.Error = downloadErr
+			}
+			sample()
+			return downloadErr
 		case <-ctx.Done():
 			res.Cancelled = true
 			return ctx.Err()
 		case <-ticker.C:
-			res.DlSpeed = internal.BrateToStr(internal.CalculateBRate(float64(buf.Len()), start))
-			res.DlBytes = int64(buf.Len())
-			res.Latency = latency
-			SpTQuerier.storeResult(res)
+			sample()
 		}
 	}
 }
@@ -221,6 +229,8 @@ func speedTestWithDialer(ctx context.Context, dialer func(ctx context.Context, n
 	res.ServerCountry = srv.Country
 
 	done := make(chan struct{})
+	// Only read after <-done; assigning the enclosing `err` in there raced.
+	var testErr error
 
 	SpTQuerier.setIsRunning(true)
 	defer SpTQuerier.setIsRunning(false)
@@ -230,29 +240,30 @@ func speedTestWithDialer(ctx context.Context, dialer func(ctx context.Context, n
 		if testDl {
 			timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
-			err = srv.DownloadTestContext(timeoutCtx)
-			if err != nil && !errors.Is(err, context.Canceled) {
-				res.Error = err
+			if e := srv.DownloadTestContext(timeoutCtx); e != nil && !errors.Is(e, context.Canceled) {
+				testErr = e
 				return
 			}
 		}
 		if testUl {
 			timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
-			err = srv.UploadTestContext(timeoutCtx)
-			if err != nil && !errors.Is(err, context.Canceled) {
-				res.Error = err
+			if e := srv.UploadTestContext(timeoutCtx); e != nil && !errors.Is(e, context.Canceled) {
+				testErr = e
 				return
 			}
 		}
 	}()
 
-	ticker := time.NewTicker(time.Millisecond * 50)
+	ticker := time.NewTicker(speedtestSampleInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-done:
+			if testErr != nil {
+				res.Error = testErr
+			}
 			res.DlSpeed = internal.BrateToStr(float64(srv.DLSpeed))
 			res.UlSpeed = internal.BrateToStr(float64(srv.ULSpeed))
 			res.DlBytes = srv.Context.GetTotalDownload()

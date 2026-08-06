@@ -18,13 +18,13 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/shlex"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/experimental/clashapi"
 	"github.com/sagernet/sing-box/experimental/clashapi/trafficontrol"
-	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/service"
@@ -33,26 +33,64 @@ import (
 	xinternet "github.com/xtls/xray-core/transport/internet"
 )
 
-var boxInstance *boxbox.Box
-var extraProcess *process.Process
-var needUnsetDNS bool
-var instanceCancel context.CancelFunc
-var debug bool
+// Serializes Start against Stop: the dispatcher gives every request its own goroutine.
+var lifecycleMu sync.Mutex
 
-// Xray core. Exactly one of these is set while a profile runs: xrayInstance for
-// an eagerly started sidecar, xrayGate when the profile asked for it to stay
-// cold until something dials it (see xray.Gate).
+// Guards the instance pointers. Never held across a Create/Start, so the pollers
+// do not block behind a profile start.
+var stateMu sync.RWMutex
+
+var boxInstance *boxbox.Box
+var instanceCancel context.CancelFunc
+
+// Exactly one is set while a profile runs: xrayInstance when eager, xrayGate when
+// the profile asked it to stay cold until something dials it.
 var xrayInstance *core.Instance
 var xrayGate *xray.Gate
+
+// Reached only from Start/Stop, i.e. always under lifecycleMu.
+var extraProcess *process.Process
+var needUnsetDNS bool
+var debug bool
+
+var errInstanceNotRunning = errors.New("Instance is not running")
+
+func currentBox() *boxbox.Box {
+	stateMu.RLock()
+	defer stateMu.RUnlock()
+	return boxInstance
+}
+
+func currentInstance() (*boxbox.Box, context.CancelFunc) {
+	stateMu.RLock()
+	defer stateMu.RUnlock()
+	return boxInstance, instanceCancel
+}
+
+func setBoxInstance(box *boxbox.Box, cancel context.CancelFunc) {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	boxInstance, instanceCancel = box, cancel
+}
+
+func setXray(instance *core.Instance, gate *xray.Gate) {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	xrayInstance, xrayGate = instance, gate
+}
 
 // liveXrayInstance is whichever Xray instance is up right now, or nil. A gated
 // sidecar has none between activations.
 func liveXrayInstance() *core.Instance {
-	if xrayInstance != nil {
-		return xrayInstance
+	stateMu.RLock()
+	instance, gate := xrayInstance, xrayGate
+	stateMu.RUnlock()
+
+	if instance != nil {
+		return instance
 	}
-	if xrayGate != nil {
-		return xrayGate.Instance()
+	if gate != nil {
+		return gate.Instance()
 	}
 	return nil
 }
@@ -66,11 +104,8 @@ func To[T any](v T) *T {
 	return &v
 }
 
-// defaultInterfaceFinder reports the physical default-route interface name via
-// the always-on, cross-platform boxdns monitor, or "" when unavailable. It is
-// passed to the live Xray instance so egress dials bind to that interface
-// (replacing the config-baked sockopt.interface + loopback bridge). It shares
-// the same source as the GetDefaultInterface RPC, so both stay consistent.
+// Physical default-route interface, or "" - the same source the GetDefaultInterface
+// RPC uses. Xray binds egress there instead of the config-baked sockopt.
 func defaultInterfaceFinder() string {
 	ifc := boxdns.DefaultInterface()
 	if ifc == nil {
@@ -79,13 +114,8 @@ func defaultInterfaceFinder() string {
 	return ifc.Name
 }
 
-// init keeps the live Xray instance's egress bound to the current default-route
-// interface. Throne's always-on boxdns monitor fires this callback whenever the
-// default interface changes (e.g. a network switch), and we push the new name
-// onto whichever Xray instance is currently live, so new dials follow the move —
-// the runtime counterpart to the initial SetEgressInterface at Start. Test and
-// validation instances are short-lived and set their interface once at creation,
-// so they are intentionally not tracked here.
+// Keeps the live Xray instance's egress on the current default route as the network
+// changes. Test instances are short-lived and set theirs once, so are not tracked.
 func init() {
 	m := boxdns.DnsManagerInstance
 	if m == nil || m.Monitor == nil {
@@ -104,13 +134,8 @@ func init() {
 	})
 }
 
-// startXrayFullConfigs brings up one Xray instance per opaque full config, each
-// bound to the physical egress interface (same as the single-xray test path).
-// The tests fold many xray-full profiles into one sing-box box whose socks
-// outbounds point at these instances (see TestReq.xray_full_configs), so they run
-// together for the duration of the batch. On any failure the instances already
-// started are torn down; on success the caller owns them and must close them via
-// closeXrayInstances.
+// One Xray instance per opaque full config, bound to the physical egress interface.
+// On failure the started ones are torn down; on success the caller must close them.
 func startXrayFullConfigs(configs []string) ([]*core.Instance, error) {
 	instances := make([]*core.Instance, 0, len(configs))
 	for _, cfg := range configs {
@@ -130,16 +155,19 @@ func startXrayFullConfigs(configs []string) ([]*core.Instance, error) {
 	return instances, nil
 }
 
-// closeXray tears down whichever live sidecar the profile brought up, gated or
-// eager, and leaves both slots empty.
+// Tears down whichever live sidecar the profile brought up, gated or eager. Slots
+// are cleared before the close so no reader picks up a pointer that is going away.
 func closeXray() {
-	if xrayGate != nil {
-		xrayGate.Close()
-		xrayGate = nil
+	stateMu.Lock()
+	instance, gate := xrayInstance, xrayGate
+	xrayInstance, xrayGate = nil, nil
+	stateMu.Unlock()
+
+	if gate != nil {
+		gate.Close()
 	}
-	if xrayInstance != nil {
-		xrayInstance.Close()
-		xrayInstance = nil
+	if instance != nil {
+		instance.Close()
 	}
 }
 
@@ -149,14 +177,113 @@ func closeXrayInstances(instances []*core.Instance) {
 	}
 }
 
+// A throwaway core stack for one batch: a test box plus any Xray sidecars its
+// outbounds dial into. close tears them down in reverse order.
+type testEnv struct {
+	box   *boxbox.Box
+	tags  []string
+	close func()
+}
+
+// `current` measures the running instance instead of building one, and owns nothing.
+func prepareTestEnv(current bool, needXray bool, xrayConfig string, xrayFullConfigs []string,
+	coreConfig string, tags []string, useDefaultOutbound bool) (*testEnv, error) {
+
+	if current {
+		box := currentBox()
+		if box == nil {
+			return nil, errInstanceNotRunning
+		}
+		// Without a "proxy" outbound there is nothing named to measure.
+		outTags := tags
+		if _, exists := box.Outbound().Outbound("proxy"); exists {
+			outTags = []string{"proxy"}
+		} else {
+			useDefaultOutbound = true
+		}
+		if useDefaultOutbound {
+			outTags = []string{box.Outbound().Default().Tag()}
+		}
+		return &testEnv{box: box, tags: outTags, close: func() {}}, nil
+	}
+
+	var cleanups []func()
+	unwind := func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
+	}
+
+	if needXray {
+		instance, err := xray.CreateXrayInstance(xrayConfig)
+		if err != nil {
+			unwind()
+			return nil, err
+		}
+		// Interface finder only (no DNS): keep test egress on the physical
+		// NIC so it doesn't loop through an active TUN. See Start().
+		instance.SetEgressInterface(defaultInterfaceFinder())
+		if err = instance.Start(); err != nil {
+			_ = instance.Close()
+			unwind()
+			return nil, err
+		}
+		cleanups = append(cleanups, func() { _ = instance.Close() })
+	}
+
+	fullXray, err := startXrayFullConfigs(xrayFullConfigs)
+	if err != nil {
+		unwind()
+		return nil, err
+	}
+	cleanups = append(cleanups, func() { closeXrayInstances(fullXray) })
+
+	box, cancel, err := boxmain.Create([]byte(coreConfig))
+	if err != nil {
+		unwind()
+		return nil, err
+	}
+	cleanups = append(cleanups, func() {
+		box.CloseWithTimeout(cancel, 2*time.Second, log.Println, false)
+	})
+
+	outTags := tags
+	if useDefaultOutbound {
+		outTags = []string{box.Outbound().Default().Tag()}
+	}
+	return &testEnv{box: box, tags: outTags, close: unwind}, nil
+}
+
+func speedTestResultToProto(res test_utils.SpeedTestResult) *gen.SpeedTestResult {
+	errStr := ""
+	if res.Error != nil {
+		errStr = res.Error.Error()
+	}
+	return &gen.SpeedTestResult{
+		DlSpeed:       To(res.DlSpeed),
+		UlSpeed:       To(res.UlSpeed),
+		Latency:       To(res.Latency),
+		OutboundTag:   To(res.Tag),
+		Error:         To(errStr),
+		ServerName:    To(res.ServerName),
+		ServerCountry: To(res.ServerCountry),
+		Cancelled:     To(res.Cancelled),
+		DlBytes:       To(res.DlBytes),
+		UlBytes:       To(res.UlBytes),
+	}
+}
+
 func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.ErrorResp, _ error) {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+
 	var err error
 
 	defer func() {
 		out = &gen.ErrorResp{}
 		if err != nil {
 			out.Error = To(err.Error())
-			boxInstance = nil
+			setBoxInstance(nil, nil)
 		}
 	}()
 
@@ -167,7 +294,7 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 		}
 	}
 
-	if boxInstance != nil {
+	if currentBox() != nil {
 		err = errors.New("instance already started")
 		return
 	}
@@ -180,9 +307,8 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 		}
 		var extraConfPath, extraCleanupPath string
 		if in.ExtraProcessConf != nil {
-			// The Core (not the GUI) creates the config, in a fresh randomly
-			// named temp file that cannot be hijacked by symlink/pre-existing
-			// file tricks even when the Core is elevated. See CreateExtraConfig.
+			// The Core creates it in a fresh random temp file that cannot be hijacked by
+			// symlink tricks even when elevated. See CreateExtraConfig.
 			extraConfPath, extraCleanupPath, e = process.CreateExtraConfig(*in.ExtraProcessConf)
 			if e != nil {
 				err = E.Cause(e, "Failed to create extra.conf")
@@ -205,13 +331,8 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 	}
 
 	if *in.NeedXray {
-		// Wire egress on the instance after creation, before Start: a dynamic
-		// interface finder for auto interface binding, and (when an address is
-		// provided) a throne-dns resolver that resolves outbound server domains
-		// through sing-box's loopback DNS. Test/validation instances get only the
-		// interface finder (so their egress still leaves the physical NIC instead
-		// of looping through an active TUN) and never the DNS resolver, so their
-		// outbound domains fall back to default resolution.
+		// Wire egress after creation, before Start. Test/validation instances get only the
+		// interface finder - never the DNS resolver - so their egress skips an active TUN.
 		dnsAddr := in.GetXrayOutboundDnsAddress()
 		dnsStrategy := in.GetXrayOutboundDnsStrategy()
 		prepareXray := func(instance *core.Instance) error {
@@ -227,33 +348,36 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 			return nil
 		}
 
+		// Published only once fully up; error paths close what they built.
 		if in.GetXrayLazyStart() {
-			xrayGate, err = xray.StartGate(*in.XrayConfig,
+			gate, e := xray.StartGate(*in.XrayConfig,
 				time.Duration(in.GetXrayIdleSeconds())*time.Second, prepareXray)
-			if err != nil {
-				xrayGate = nil
+			if e != nil {
+				err = e
 				return
 			}
+			setXray(nil, gate)
 		} else {
-			xrayInstance, err = xray.CreateXrayInstance(*in.XrayConfig)
-			if err != nil {
+			instance, e := xray.CreateXrayInstance(*in.XrayConfig)
+			if e != nil {
+				err = e
 				return
 			}
-			if err = prepareXray(xrayInstance); err != nil {
-				xrayInstance.Close()
-				xrayInstance = nil
+			if e = prepareXray(instance); e != nil {
+				instance.Close()
+				err = e
 				return
 			}
-			err = xrayInstance.Start()
-			if err != nil {
-				xrayInstance.Close()
-				xrayInstance = nil
+			if e = instance.Start(); e != nil {
+				instance.Close()
+				err = e
 				return
 			}
+			setXray(instance, nil)
 		}
 	}
 
-	boxInstance, instanceCancel, err = boxmain.Create([]byte(*in.CoreConfig))
+	box, cancel, err := boxmain.Create([]byte(*in.CoreConfig))
 	if err != nil {
 		if extraProcess != nil {
 			extraProcess.Stop()
@@ -262,11 +386,12 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 		closeXray()
 		return
 	}
+	setBoxInstance(box, cancel)
 
 	if runtime.GOOS == "darwin" && in.GetTunIpv4Cidr() != "" {
 		stopAllCores := func() {
-			boxInstance.CloseWithTimeout(instanceCancel, time.Second*2, log.Println, true)
-			boxInstance = nil
+			box.CloseWithTimeout(cancel, time.Second*2, log.Println, true)
+			setBoxInstance(nil, nil)
 			if extraProcess != nil {
 				extraProcess.Stop()
 				extraProcess = nil
@@ -289,7 +414,7 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 			return
 		}
 
-		if err := sys.SetSystemDNS(tunDNS.String(), boxInstance.Network().InterfaceMonitor()); err != nil {
+		if err := sys.SetSystemDNS(tunDNS.String(), box.Network().InterfaceMonitor()); err != nil {
 			log.Println("Failed to set system DNS:", err)
 		}
 
@@ -300,6 +425,9 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 }
 
 func (s *server) Stop(ctx context.Context, in *gen.EmptyReq) (out *gen.ErrorResp, _ error) {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
+
 	var err error
 
 	defer func() {
@@ -309,20 +437,21 @@ func (s *server) Stop(ctx context.Context, in *gen.EmptyReq) (out *gen.ErrorResp
 		}
 	}()
 
-	if boxInstance == nil {
+	box, cancel := currentInstance()
+	if box == nil {
 		return
 	}
 
 	if needUnsetDNS {
 		needUnsetDNS = false
-		err := sys.SetSystemDNS("Empty", boxInstance.Network().InterfaceMonitor())
+		err := sys.SetSystemDNS("Empty", box.Network().InterfaceMonitor())
 		if err != nil {
 			log.Println("Failed to unset system DNS:", err)
 		}
 	}
-	boxInstance.CloseWithTimeout(instanceCancel, time.Second*2, log.Println, true)
-
-	boxInstance = nil
+	// Unpublished first, so a poll mid-teardown sees no instance rather than a dying one.
+	setBoxInstance(nil, nil)
+	box.CloseWithTimeout(cancel, time.Second*2, log.Println, true)
 
 	if extraProcess != nil {
 		extraProcess.Stop()
@@ -336,10 +465,8 @@ func (s *server) Stop(ctx context.Context, in *gen.EmptyReq) (out *gen.ErrorResp
 
 func (s *server) CheckConfig(ctx context.Context, in *gen.LoadConfigReq) (out *gen.ErrorResp, _ error) {
 	out = &gen.ErrorResp{}
-	// Recover from panics inside boxmain.Check (e.g. malformed configs that trigger
-	// sing-box internal panics). Without this, the panic propagates to main() which
-	// calls os.Exit(0) and kills the entire core process. The full goroutine stack
-	// goes to the operator log; the wire response carries only the panic value.
+	// boxmain.Check can panic on malformed configs; unrecovered it reaches main()'s
+	// os.Exit(0) and kills the core. Stack to the log, panic value to the wire.
 	defer func() {
 		if r := recover(); r != nil {
 			buf := make([]byte, 4096)
@@ -364,79 +491,33 @@ func (s *server) CheckConfig(ctx context.Context, in *gen.LoadConfigReq) (out *g
 }
 
 func (s *server) Test(ctx context.Context, in *gen.TestReq) (*gen.TestResp, error) {
-	var testInstance *boxbox.Box
-	var xrayTestIntance *core.Instance
-	var cancel context.CancelFunc
-	var err error
-	var twice = true
-	if *in.TestCurrent {
-		if boxInstance == nil {
+	env, err := prepareTestEnv(in.GetTestCurrent(), in.GetNeedXray(), in.GetXrayConfig(),
+		in.XrayFullConfigs, in.GetConfig(), in.OutboundTags, in.GetUseDefaultOutbound())
+	if err != nil {
+		if errors.Is(err, errInstanceNotRunning) {
 			return &gen.TestResp{Results: []*gen.URLTestResp{{
 				OutboundTag: To("proxy"),
 				LatencyMs:   To(int32(0)),
-				Error:       To("Instance is not running"),
+				Error:       To(err.Error()),
 			}}}, nil
 		}
-		testInstance = boxInstance
-		twice = false
-	} else {
-		if *in.NeedXray {
-			xrayTestIntance, err = xray.CreateXrayInstance(*in.XrayConfig)
-			if err != nil {
-				return nil, err
-			}
-			// Interface finder only (no DNS): keep test egress on the physical
-			// NIC so it doesn't loop through an active TUN. See Start().
-			xrayTestIntance.SetEgressInterface(defaultInterfaceFinder())
-			err = xrayTestIntance.Start()
-			if err != nil {
-				return nil, err
-			}
-			defer func() {
-				common.Must(xrayTestIntance.Close())
-			}() // crash in case it does not close properly
-		}
-		fullXray, ferr := startXrayFullConfigs(in.XrayFullConfigs)
-		if ferr != nil {
-			return nil, ferr
-		}
-		defer closeXrayInstances(fullXray)
-		testInstance, cancel, err = boxmain.Create([]byte(*in.Config))
-		if err != nil {
-			return nil, err
-		}
-		defer testInstance.CloseWithTimeout(cancel, 2*time.Second, log.Println, false)
+		return nil, err
 	}
+	defer env.close()
 
-	needDefault := false
-	outboundTags := in.OutboundTags
-	if *in.TestCurrent {
-		_, exists := testInstance.Outbound().Outbound("proxy")
-		if !exists {
-			needDefault = true
-		} else {
-			outboundTags = []string{"proxy"}
-		}
-	}
-	if *in.UseDefaultOutbound || needDefault {
-		outbound := testInstance.Outbound().Default()
-		outboundTags = []string{outbound.Tag()}
-	}
+	// A muxed config needs a warm connection; the live instance already is one.
+	twice := !in.GetTestCurrent()
+	results := test_utils.BatchURLTest(test_utils.TestContext(), env.box, env.tags, in.GetUrl(),
+		int(in.GetMaxConcurrency()), twice, time.Duration(in.GetTestTimeoutMs())*time.Millisecond)
 
-	var maxConcurrency = *in.MaxConcurrency
-	if maxConcurrency >= 500 || maxConcurrency == 0 {
-		maxConcurrency = test_utils.MaxConcurrentTests
-	}
-	results := test_utils.BatchURLTest(test_utils.TestCtx, testInstance, outboundTags, *in.Url, int(maxConcurrency), twice, time.Duration(*in.TestTimeoutMs)*time.Millisecond)
-
-	res := make([]*gen.URLTestResp, 0)
+	res := make([]*gen.URLTestResp, 0, len(results))
 	for idx, data := range results {
 		errStr := ""
 		if data.Error != nil {
 			errStr = data.Error.Error()
 		}
 		res = append(res, &gen.URLTestResp{
-			OutboundTag: To(outboundTags[idx]),
+			OutboundTag: To(env.tags[idx]),
 			LatencyMs:   To(int32(data.Duration.Milliseconds())),
 			Error:       To(errStr),
 		})
@@ -447,7 +528,6 @@ func (s *server) Test(ctx context.Context, in *gen.TestReq) (*gen.TestResp, erro
 
 func (s *server) StopTest(ctx context.Context, in *gen.EmptyReq) (*gen.EmptyResp, error) {
 	test_utils.CancelTests()
-	test_utils.TestCtx, test_utils.CancelTests = context.WithCancel(context.Background())
 
 	return &gen.EmptyResp{}, nil
 }
@@ -470,49 +550,17 @@ func (s *server) QueryURLTest(ctx context.Context, in *gen.EmptyReq) (out *gen.Q
 }
 
 func (s *server) IPTest(ctx context.Context, in *gen.IPTestRequest) (*gen.IPTestResp, error) {
-	var testInstance *boxbox.Box
-	var xrayTestInstance *core.Instance
-	var cancel context.CancelFunc
-	var err error
-	if *in.NeedXray {
-		xrayTestInstance, err = xray.CreateXrayInstance(*in.XrayConfig)
-		if err != nil {
-			return nil, err
-		}
-		// Interface finder only (no DNS): keep test egress on the physical
-		// NIC so it doesn't loop through an active TUN. See Start().
-		xrayTestInstance.SetEgressInterface(defaultInterfaceFinder())
-		err = xrayTestInstance.Start()
-		if err != nil {
-			return nil, err
-		}
-		defer func() {
-			common.Must(xrayTestInstance.Close())
-		}()
-	}
-	fullXray, ferr := startXrayFullConfigs(in.XrayFullConfigs)
-	if ferr != nil {
-		return nil, ferr
-	}
-	defer closeXrayInstances(fullXray)
-	testInstance, cancel, err = boxmain.Create([]byte(*in.Config))
+	// Always builds its own box: there is no test-current variant of an IP test.
+	env, err := prepareTestEnv(false, in.GetNeedXray(), in.GetXrayConfig(),
+		in.XrayFullConfigs, in.GetConfig(), in.OutboundTags, in.GetUseDefaultOutbound())
 	if err != nil {
 		return nil, err
 	}
-	defer testInstance.CloseWithTimeout(cancel, 2*time.Second, log.Println, false)
+	defer env.close()
 
-	outboundTags := in.OutboundTags
-	if *in.UseDefaultOutbound {
-		outbound := testInstance.Outbound().Default()
-		outboundTags = []string{outbound.Tag()}
-	}
-
-	maxConcurrency := *in.MaxConcurrency
-	if maxConcurrency >= 500 || maxConcurrency == 0 {
-		maxConcurrency = test_utils.MaxConcurrentTests
-	}
-	timeout := time.Duration(*in.TestTimeoutMs) * time.Millisecond
-	results := test_utils.BatchIPTest(test_utils.TestCtx, testInstance, outboundTags, int(maxConcurrency), timeout)
+	timeout := time.Duration(in.GetTestTimeoutMs()) * time.Millisecond
+	results := test_utils.BatchIPTest(test_utils.TestContext(), env.box, env.tags,
+		int(in.GetMaxConcurrency()), timeout)
 
 	res := make([]*gen.IPTestRes, 0, len(results))
 	for idx, data := range results {
@@ -520,9 +568,8 @@ func (s *server) IPTest(ctx context.Context, in *gen.IPTestRequest) (*gen.IPTest
 		if data.Error != nil {
 			errStr = data.Error.Error()
 		}
-		tag := outboundTags[idx]
 		res = append(res, &gen.IPTestRes{
-			OutboundTag: To(tag),
+			OutboundTag: To(env.tags[idx]),
 			Ip:          To(data.Result.IP),
 			CountryCode: To(data.Result.CountryCode),
 			Error:       To(errStr),
@@ -553,8 +600,8 @@ func (s *server) QueryStats(ctx context.Context, in *gen.EmptyReq) (out *gen.Que
 	out = &gen.QueryStatsResp{}
 	out.Ups = make(map[string]int64)
 	out.Downs = make(map[string]int64)
-	if boxInstance != nil {
-		clash := service.FromContext[adapter.ClashServer](boxInstance.Context())
+	if box := currentBox(); box != nil {
+		clash := service.FromContext[adapter.ClashServer](box.Context())
 		if clash != nil {
 			cApi, ok := clash.(*clashapi.Server)
 			if !ok {
@@ -562,13 +609,13 @@ func (s *server) QueryStats(ctx context.Context, in *gen.EmptyReq) (out *gen.Que
 				err = E.New("invalid clash server type")
 				return
 			}
-			outbounds := service.FromContext[adapter.OutboundManager](boxInstance.Context())
+			outbounds := service.FromContext[adapter.OutboundManager](box.Context())
 			if outbounds == nil {
 				log.Println("Failed to get outbound manager")
 				err = E.New("nil outbound manager")
 				return
 			}
-			endpoints := service.FromContext[adapter.EndpointManager](boxInstance.Context())
+			endpoints := service.FromContext[adapter.EndpointManager](box.Context())
 			if endpoints == nil {
 				log.Println("Failed to get endpoint manager")
 				err = E.New("nil endpoint manager")
@@ -620,15 +667,14 @@ func connMetaToProto(c *trafficontrol.TrackerMetadata) *gen.ConnectionMetaData {
 	}
 }
 
-// QueryConnections returns both live connections (for the connection table) and
-// the recently-closed ring (so traffic accounting doesn't lose the tail of a
-// connection that closed between polls). The closed ring is non-draining; the
-// client dedups by connection id.
+// Live connections plus the recently-closed ring, so accounting does not lose one
+// that closed between polls. Non-draining; the client dedups by id.
 func (s *server) QueryConnections(ctx context.Context, in *gen.EmptyReq) (*gen.QueryConnectionsResp, error) {
-	if boxInstance == nil {
+	box := currentBox()
+	if box == nil {
 		return &gen.QueryConnectionsResp{}, nil
 	}
-	clashServer := service.FromContext[adapter.ClashServer](boxInstance.Context())
+	clashServer := service.FromContext[adapter.ClashServer](box.Context())
 	if clashServer == nil {
 		return &gen.QueryConnectionsResp{}, errors.New("no clash server found")
 	}
@@ -663,81 +709,27 @@ func (s *server) SpeedTest(ctx context.Context, in *gen.SpeedTestRequest) (*gen.
 	if !*in.TestDownload && !*in.TestUpload && !*in.SimpleDownload && !*in.OnlyCountry {
 		return nil, errors.New("cannot run empty test")
 	}
-	var testInstance *boxbox.Box
-	var xrayTestIntance *core.Instance
-	var cancel context.CancelFunc
-	outboundTags := in.OutboundTags
-	var err error
-	if *in.TestCurrent {
-		if boxInstance == nil {
+
+	env, err := prepareTestEnv(in.GetTestCurrent(), in.GetNeedXray(), in.GetXrayConfig(),
+		in.XrayFullConfigs, in.GetConfig(), in.OutboundTags, in.GetUseDefaultOutbound())
+	if err != nil {
+		if errors.Is(err, errInstanceNotRunning) {
 			return &gen.SpeedTestResponse{Results: []*gen.SpeedTestResult{{
 				OutboundTag: To("proxy"),
-				Error:       To("Instance is not running"),
+				Error:       To(err.Error()),
 			}}}, nil
 		}
-		testInstance = boxInstance
-	} else {
-		if *in.NeedXray {
-			xrayTestIntance, err = xray.CreateXrayInstance(*in.XrayConfig)
-			if err != nil {
-				return nil, err
-			}
-			// Interface finder only (no DNS): keep test egress on the physical
-			// NIC so it doesn't loop through an active TUN. See Start().
-			xrayTestIntance.SetEgressInterface(defaultInterfaceFinder())
-			err = xrayTestIntance.Start()
-			if err != nil {
-				return nil, err
-			}
-			defer xrayTestIntance.Close()
-		}
-		fullXray, ferr := startXrayFullConfigs(in.XrayFullConfigs)
-		if ferr != nil {
-			return nil, ferr
-		}
-		defer closeXrayInstances(fullXray)
-		testInstance, cancel, err = boxmain.Create([]byte(*in.Config))
-		if err != nil {
-			return nil, err
-		}
-		defer cancel()
-		defer testInstance.Close()
+		return nil, err
 	}
+	defer env.close()
 
-	needDefault := false
-	if *in.TestCurrent {
-		_, exists := testInstance.Outbound().Outbound("proxy")
-		if !exists {
-			needDefault = true
-		} else {
-			outboundTags = []string{"proxy"}
-		}
-	}
-	if *in.UseDefaultOutbound || needDefault {
-		outbound := testInstance.Outbound().Default()
-		outboundTags = []string{outbound.Tag()}
-	}
+	results := test_utils.BatchSpeedTest(test_utils.TestContext(), env.box, env.tags,
+		*in.TestDownload, *in.TestUpload, *in.SimpleDownload, *in.SimpleDownloadAddr,
+		time.Duration(*in.TimeoutMs)*time.Millisecond, *in.OnlyCountry, *in.CountryConcurrency)
 
-	results := test_utils.BatchSpeedTest(test_utils.TestCtx, testInstance, outboundTags, *in.TestDownload, *in.TestUpload, *in.SimpleDownload, *in.SimpleDownloadAddr, time.Duration(*in.TimeoutMs)*time.Millisecond, *in.OnlyCountry, *in.CountryConcurrency)
-
-	res := make([]*gen.SpeedTestResult, 0)
+	res := make([]*gen.SpeedTestResult, 0, len(results))
 	for _, data := range results {
-		errStr := ""
-		if data.Error != nil {
-			errStr = data.Error.Error()
-		}
-		res = append(res, &gen.SpeedTestResult{
-			DlSpeed:       To(data.DlSpeed),
-			UlSpeed:       To(data.UlSpeed),
-			Latency:       To(data.Latency),
-			OutboundTag:   To(data.Tag),
-			Error:         To(errStr),
-			ServerName:    To(data.ServerName),
-			ServerCountry: To(data.ServerCountry),
-			Cancelled:     To(data.Cancelled),
-			DlBytes:       To(data.DlBytes),
-			UlBytes:       To(data.UlBytes),
-		})
+		res = append(res, speedTestResultToProto(*data))
 	}
 
 	return &gen.SpeedTestResponse{Results: res}, nil
@@ -745,23 +737,8 @@ func (s *server) SpeedTest(ctx context.Context, in *gen.SpeedTestRequest) (*gen.
 
 func (s *server) QuerySpeedTest(context.Context, *gen.EmptyReq) (*gen.QuerySpeedTestResponse, error) {
 	res, isRunning := test_utils.SpTQuerier.Result()
-	errStr := ""
-	if res.Error != nil {
-		errStr = res.Error.Error()
-	}
 	return &gen.QuerySpeedTestResponse{
-		Result: &gen.SpeedTestResult{
-			DlSpeed:       To(res.DlSpeed),
-			UlSpeed:       To(res.UlSpeed),
-			Latency:       To(res.Latency),
-			OutboundTag:   To(res.Tag),
-			Error:         To(errStr),
-			ServerName:    To(res.ServerName),
-			ServerCountry: To(res.ServerCountry),
-			Cancelled:     To(res.Cancelled),
-			DlBytes:       To(res.DlBytes),
-			UlBytes:       To(res.UlBytes),
-		},
+		Result:    speedTestResultToProto(res),
 		IsRunning: To(isRunning),
 	}, nil
 }
@@ -770,20 +747,7 @@ func (s *server) QueryCountryTest(ctx context.Context, _ *gen.EmptyReq) (out *ge
 	results := test_utils.CountryResults.Results()
 	out = &gen.QueryCountryTestResponse{}
 	for _, res := range results {
-		var errStr string
-		if res.Error != nil {
-			errStr = res.Error.Error()
-		}
-		out.Results = append(out.Results, &gen.SpeedTestResult{
-			DlSpeed:       To(res.DlSpeed),
-			UlSpeed:       To(res.UlSpeed),
-			Latency:       To(res.Latency),
-			OutboundTag:   To(res.Tag),
-			Error:         To(errStr),
-			ServerName:    To(res.ServerName),
-			ServerCountry: To(res.ServerCountry),
-			Cancelled:     To(res.Cancelled),
-		})
+		out.Results = append(out.Results, speedTestResultToProto(*res))
 	}
 	return
 }

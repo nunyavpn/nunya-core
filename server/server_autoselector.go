@@ -15,10 +15,11 @@ import (
 // live box owns them, so an absent box simply means "none".
 func autoSelectors() map[string]group.AutoSelectorGroup {
 	found := make(map[string]group.AutoSelectorGroup)
-	if boxInstance == nil {
+	box := currentBox()
+	if box == nil {
 		return found
 	}
-	outbounds := service.FromContext[adapter.OutboundManager](boxInstance.Context())
+	outbounds := service.FromContext[adapter.OutboundManager](box.Context())
 	if outbounds == nil {
 		return found
 	}

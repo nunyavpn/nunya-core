@@ -4,8 +4,6 @@ import (
 	"ThroneCore/internal/boxmain"
 	"ThroneCore/ipc"
 	"ThroneCore/parentcheck"
-	"ThroneCore/test_utils"
-	"context"
 	"fmt"
 	"github.com/xtls/xray-core/core"
 	"log"
@@ -149,7 +147,6 @@ func main() {
 	runtimeDebug.SetMemoryLimit(memoryLimit)
 	go watchMemory()
 
-	test_utils.TestCtx, test_utils.CancelTests = context.WithCancel(context.Background())
 	RunCore()
 	return
 }

@@ -16,16 +16,9 @@ import (
 
 var globalServer = &server{}
 
-// runDispatch reads request frames and dispatches each one to its own goroutine.
-// Responses are written back with the matching reqId so the GUI can demultiplex.
-//
-// Request wire format (little-endian):
-//
-//	[uint32 reqId][uint16 methodLen][method bytes][uint32 payloadLen][payload]
-//
-// Response wire format (little-endian):
-//
-//	[uint32 reqId][uint8 status][uint32 dataLen][data]
+// runDispatch reads request frames and dispatches each to its own goroutine.
+// Request:  [uint32 reqId][uint16 methodLen][method][uint32 payloadLen][payload]
+// Response: [uint32 reqId][uint8 status][uint32 dataLen][data]   (little-endian)
 func runDispatch(conn net.Conn) {
 	defer func() {
 		conn.Close()
@@ -101,221 +94,57 @@ func runDispatch(conn net.Conn) {
 	}
 }
 
-func dispatch(methodName string, payload []byte) ([]byte, error) {
-	ctx := context.Background()
-	s := globalServer
+type handlerFn func(context.Context, []byte) ([]byte, error)
 
-	switch methodName {
-	case "Start":
-		req := &gen.LoadConfigReq{}
+// handle adapts a typed server method to the wire: unmarshal, call, marshal.
+// PReq pins Req to the pointer type the generated code implements proto.Message on.
+func handle[Req any, PReq interface {
+	*Req
+	proto.Message
+}, Resp proto.Message](fn func(context.Context, PReq) (Resp, error)) handlerFn {
+	return func(ctx context.Context, payload []byte) ([]byte, error) {
+		req := PReq(new(Req))
 		if err := proto.Unmarshal(payload, req); err != nil {
 			return nil, err
 		}
-		resp, err := s.Start(ctx, req)
+		resp, err := fn(ctx, req)
 		if err != nil {
 			return nil, err
 		}
 		return proto.Marshal(resp)
-
-	case "Stop":
-		req := &gen.EmptyReq{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.Stop(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	case "CheckConfig":
-		req := &gen.LoadConfigReq{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.CheckConfig(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	case "Test":
-		req := &gen.TestReq{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.Test(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	case "StopTest":
-		req := &gen.EmptyReq{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.StopTest(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	case "QueryURLTest":
-		req := &gen.EmptyReq{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.QueryURLTest(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	case "IPTest":
-		req := &gen.IPTestRequest{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.IPTest(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	case "QueryIPTest":
-		req := &gen.EmptyReq{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.QueryIPTest(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	case "QueryStats":
-		req := &gen.EmptyReq{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.QueryStats(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	case "QueryConnections":
-		req := &gen.EmptyReq{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.QueryConnections(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	case "QueryAutoSelectors":
-		req := &gen.EmptyReq{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.QueryAutoSelectors(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	case "AutoSelectorAction":
-		req := &gen.AutoSelectorActionRequest{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.AutoSelectorAction(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	case "IsPrivileged":
-		req := &gen.EmptyReq{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.IsPrivileged(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	case "SetSystemDNS":
-		req := &gen.SetSystemDNSRequest{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.SetSystemDNS(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	case "GetDefaultInterface":
-		req := &gen.EmptyReq{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.GetDefaultInterface(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	case "SpeedTest":
-		req := &gen.SpeedTestRequest{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.SpeedTest(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	case "QuerySpeedTest":
-		req := &gen.EmptyReq{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.QuerySpeedTest(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	case "QueryCountryTest":
-		req := &gen.EmptyReq{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.QueryCountryTest(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	case "GenWgKeyPair":
-		req := &gen.EmptyReq{}
-		if err := proto.Unmarshal(payload, req); err != nil {
-			return nil, err
-		}
-		resp, err := s.GenWgKeyPair(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-
-	default:
-		return nil, fmt.Errorf("unknown method: %s", methodName)
 	}
 }
+
+// The whole RPC surface. Request types are inferred from each method signature.
+var handlers = map[string]handlerFn{
+	"Start":               handle(globalServer.Start),
+	"Stop":                handle(globalServer.Stop),
+	"CheckConfig":         handle(globalServer.CheckConfig),
+	"Test":                handle(globalServer.Test),
+	"StopTest":            handle(globalServer.StopTest),
+	"QueryURLTest":        handle(globalServer.QueryURLTest),
+	"IPTest":              handle(globalServer.IPTest),
+	"QueryIPTest":         handle(globalServer.QueryIPTest),
+	"QueryStats":          handle(globalServer.QueryStats),
+	"QueryConnections":    handle(globalServer.QueryConnections),
+	"QueryAutoSelectors":  handle(globalServer.QueryAutoSelectors),
+	"AutoSelectorAction":  handle(globalServer.AutoSelectorAction),
+	"IsPrivileged":        handle(globalServer.IsPrivileged),
+	"SetSystemDNS":        handle(globalServer.SetSystemDNS),
+	"GetDefaultInterface": handle(globalServer.GetDefaultInterface),
+	"SpeedTest":           handle(globalServer.SpeedTest),
+	"QuerySpeedTest":      handle(globalServer.QuerySpeedTest),
+	"QueryCountryTest":    handle(globalServer.QueryCountryTest),
+	"GenWgKeyPair":        handle(globalServer.GenWgKeyPair),
+}
+
+func dispatch(methodName string, payload []byte) ([]byte, error) {
+	h, found := handlers[methodName]
+	if !found {
+		return nil, fmt.Errorf("unknown method: %s", methodName)
+	}
+	return h(context.Background(), payload)
+}
+
+// The wire path goes through the table above, not gRPC; keep the interface honest.
+var _ gen.LibcoreServiceServer = globalServer
