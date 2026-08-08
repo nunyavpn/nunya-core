@@ -33,7 +33,7 @@ func BatchIPTest(ctx context.Context, i *boxbox.Box, outboundTags []string, maxC
 		timeout = IPTestTimeout
 	}
 
-	return runBatch(ctx, i, outboundTags, maxConcurrency, batchProbe[IPTestResult]{
+	results := runBatch(ctx, i, outboundTags, maxConcurrency, batchProbe[IPTestResult]{
 		run: func(ctx context.Context, tag string, outbound adapter.Outbound) *IPTestResult {
 			client := outboundHTTPClient(ctx, outbound, timeout)
 			info, err := ipTest(ctx, client)
@@ -44,6 +44,8 @@ func BatchIPTest(ctx context.Context, i *boxbox.Box, outboundTags []string, maxC
 		},
 		publish: IPReporter.AddResult,
 	})
+	IPReporter.Reclaim(results)
+	return results
 }
 
 func ipTest(ctx context.Context, client *http.Client) (IPInfo, error) {

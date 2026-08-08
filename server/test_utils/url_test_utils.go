@@ -25,7 +25,7 @@ func BatchURLTest(ctx context.Context, i *boxbox.Box, outboundTags []string, url
 		timeout = URLTestTimeout
 	}
 
-	return runBatch(ctx, i, outboundTags, maxConcurrency, batchProbe[URLTestResult]{
+	results := runBatch(ctx, i, outboundTags, maxConcurrency, batchProbe[URLTestResult]{
 		run: func(ctx context.Context, tag string, outbound adapter.Outbound) *URLTestResult {
 			client := outboundHTTPClient(ctx, outbound, timeout)
 			// to properly measure muxed configs, let's do the test twice
@@ -40,6 +40,8 @@ func BatchURLTest(ctx context.Context, i *boxbox.Box, outboundTags []string, url
 		},
 		publish: URLReporter.AddResult,
 	})
+	URLReporter.Reclaim(results)
+	return results
 }
 
 func urlTest(ctx context.Context, client *http.Client, url string) (time.Duration, error) {

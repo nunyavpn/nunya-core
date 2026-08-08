@@ -146,6 +146,7 @@ func BatchSpeedTest(ctx context.Context, i *boxbox.Box, outboundTags []string, t
 		}
 	}
 	wg.Wait()
+	CountryResults.Reclaim(results)
 
 	return results
 }

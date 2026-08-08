@@ -75,6 +75,29 @@ func (b *resultBuffer[T]) Results() []*T {
 	return res
 }
 
+// Anything left buffered is drained by the next test, whose tags repeat ours.
+func (b *resultBuffer[T]) Reclaim(owned []*T) {
+	if len(owned) == 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.results) == 0 {
+		return
+	}
+	drop := make(map[*T]struct{}, len(owned))
+	for _, r := range owned {
+		drop[r] = struct{}{}
+	}
+	kept := b.results[:0]
+	for _, r := range b.results {
+		if _, ours := drop[r]; !ours {
+			kept = append(kept, r)
+		}
+	}
+	b.results = kept
+}
+
 // The per-kind half of runBatch: measure, report an unmeasurable tag, publish.
 type batchProbe[T any] struct {
 	run     func(ctx context.Context, tag string, outbound adapter.Outbound) *T
