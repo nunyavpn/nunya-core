@@ -121,16 +121,6 @@ func To[T any](v T) *T {
 	return &v
 }
 
-// Physical default-route interface, or "" - the same source the GetDefaultInterface
-// RPC uses. Xray binds egress there instead of the config-baked sockopt.
-func defaultInterfaceFinder() string {
-	ifc := boxdns.DefaultInterface()
-	if ifc == nil {
-		return ""
-	}
-	return ifc.Name
-}
-
 // Keeps the live Xray instance's egress on the current default route as the network
 // changes. Test instances are short-lived and set theirs once, so are not tracked.
 func init() {
@@ -143,13 +133,15 @@ func init() {
 		if ifc != nil {
 			name = ifc.Name
 		}
+		// The callback's interface is fresher than currentEgress would report here;
+		// the mark is unaffected by a route move and carries over unchanged.
 		for _, inst := range liveXrayInstances() {
-			inst.SetEgressInterface(name)
+			inst.SetEgress(name, autoRedirectMark.Load())
 		}
 	})
 }
 
-// One Xray instance per opaque full config, bound to the physical egress interface.
+// One Xray instance per opaque full config, wired to the current egress conditions.
 // On failure the started ones are torn down; on success the caller must close them.
 func startXrayFullConfigs(configs []string) ([]*core.Instance, error) {
 	instances := make([]*core.Instance, 0, len(configs))
@@ -159,7 +151,7 @@ func startXrayFullConfigs(configs []string) ([]*core.Instance, error) {
 			closeXrayInstances(instances)
 			return nil, err
 		}
-		inst.SetEgressInterface(defaultInterfaceFinder())
+		inst.SetEgress(currentEgress())
 		if err := inst.Start(); err != nil {
 			_ = inst.Close()
 			closeXrayInstances(instances)
@@ -289,9 +281,10 @@ func prepareTestEnv(current bool, needXray bool, xrayConfig string, xrayFullConf
 			unwind()
 			return nil, err
 		}
-		// Interface finder only (no DNS): keep test egress on the physical
-		// NIC so it doesn't loop through an active TUN. See Start().
-		instance.SetEgressInterface(defaultInterfaceFinder())
+		// Egress only (no DNS): keep test egress off an active TUN, both the
+		// route it would take and the auto_redirect that would pull it back
+		// in regardless of route. See Start().
+		instance.SetEgress(currentEgress())
 		if err = instance.Start(); err != nil {
 			_ = instance.Close()
 			unwind()
@@ -353,6 +346,7 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 		if err != nil {
 			out.Error = To(err.Error())
 			setBoxInstance(nil, nil)
+			autoRedirectMark.Store(0)
 		}
 	}()
 
@@ -399,12 +393,12 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 		}
 	}
 
-	// Wire egress after creation, before Start. Test/validation instances get only the
-	// interface finder - never the DNS resolver - so their egress skips an active TUN.
+	autoRedirectMark.Store(autoRedirectMarkFor([]byte(in.GetCoreConfig())))
+
 	dnsAddr := in.GetXrayOutboundDnsAddress()
 	dnsStrategy := in.GetXrayOutboundDnsStrategy()
 	prepareXray := func(instance *core.Instance) error {
-		instance.SetEgressInterface(defaultInterfaceFinder())
+		instance.SetEgress(currentEgress())
 		if dnsAddr == "" {
 			return nil
 		}
@@ -539,6 +533,9 @@ func (s *server) Stop(ctx context.Context, in *gen.EmptyReq) (out *gen.ErrorResp
 	}
 
 	closeXray()
+	// The Tun and its nftables rules went down with the box above, so test
+	// instances started from here on must not carry the exemption mark.
+	autoRedirectMark.Store(0)
 
 	return
 }
