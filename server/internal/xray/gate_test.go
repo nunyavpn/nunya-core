@@ -5,6 +5,7 @@ import (
 	"net"
 	"strconv"
 	"testing"
+	"time"
 )
 
 func TestRemapInboundsMovesPortsBehindTheOriginals(t *testing.T) {
@@ -139,4 +140,25 @@ func TestGateListensBeforeAnyInstanceStarts(t *testing.T) {
 		t.Fatalf("gated port refused a connection while cold: %v", err)
 	}
 	_ = conn.Close()
+}
+
+func TestSweepIntervalFor(t *testing.T) {
+	cases := []struct {
+		name string
+		idle time.Duration
+		want time.Duration
+	}{
+		{"resident keeps the coarse tick", 0, gateSweepInterval},
+		{"long idle keeps the coarse tick", 10 * time.Minute, gateSweepInterval},
+		{"pool idle halves it", 30 * time.Second, 15 * time.Second},
+		{"short idle tightens it", 10 * time.Second, 5 * time.Second},
+		{"tiny idle stops at the floor", 2 * time.Second, minGateSweepInterval},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sweepIntervalFor(tc.idle); got != tc.want {
+				t.Fatalf("sweepIntervalFor(%v) = %v, want %v", tc.idle, got, tc.want)
+			}
+		})
+	}
 }

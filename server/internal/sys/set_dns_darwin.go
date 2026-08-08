@@ -14,8 +14,13 @@ func SetSystemDNS(addr string, interfaceMonitor tun.DefaultInterfaceMonitor) err
 		return err
 	}
 
-	err = shell.Exec("/usr/sbin/networksetup", "-setdnsservers", interfaceDisplayName, addr).Attach().Run()
+	// networksetup commits through configd; only its plist backup copy needs root, so its
+	// "Permission denied" is noise unless the command itself failed.
+	output, err := shell.Exec("/usr/sbin/networksetup", "-setdnsservers", interfaceDisplayName, addr).Read()
 	if err != nil {
+		if output = strings.TrimSpace(output); output != "" {
+			return E.Cause(err, output)
+		}
 		return err
 	}
 

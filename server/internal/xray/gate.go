@@ -15,8 +15,23 @@ import (
 	"github.com/xtls/xray-core/core"
 )
 
-// How often the gate looks for an instance that has gone idle.
-const gateSweepInterval = 15 * time.Second
+// How often the gate looks for an instance that has gone idle, and the floor on
+// that once a short idle window pulls it down.
+const (
+	gateSweepInterval    = 15 * time.Second
+	minGateSweepInterval = 2 * time.Second
+)
+
+// Keeps shutdown within about half the idle window instead of a fixed tick late.
+func sweepIntervalFor(idle time.Duration) time.Duration {
+	if idle <= 0 || idle/2 >= gateSweepInterval {
+		return gateSweepInterval
+	}
+	if half := idle / 2; half > minGateSweepInterval {
+		return half
+	}
+	return minGateSweepInterval
+}
 
 // Gate keeps an Xray instance cold until traffic actually needs it.
 //
@@ -305,7 +320,7 @@ func (g *Gate) ensure() (*core.Instance, error) {
 }
 
 func (g *Gate) sweep() {
-	ticker := time.NewTicker(gateSweepInterval)
+	ticker := time.NewTicker(sweepIntervalFor(g.idle))
 	defer ticker.Stop()
 	for {
 		select {

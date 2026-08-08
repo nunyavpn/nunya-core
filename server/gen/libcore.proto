@@ -65,6 +65,11 @@ message LoadConfigReq {
   // Seconds without gated traffic before a lazily started instance is shut down
   // again. 0 keeps it resident once it has started.
   optional int32 xray_idle_seconds = 15 [default = 0];
+  // Opaque full configs, each its own gated instance backing a socks outbound
+  // already in `core_config`. Never merged into `xray_config`.
+  repeated string xray_full_configs = 16;
+  // Separate from xray_idle_seconds; 0 keeps them resident once started.
+  optional int32 xray_full_idle_seconds = 17 [default = 0];
 }
 
 message URLTestResp {
@@ -83,10 +88,8 @@ message TestReq {
   optional int32 test_timeout_ms = 7 [default = 0];
   optional bool need_xray = 8 [default = false];
   optional string xray_config = 9 [default = ""];
-  // Opaque, standalone Xray full configs, one per profile. Each becomes its own
-  // Xray instance whose socks inbound backs a socks outbound already present in
-  // `config`; unlike `xray_config` (the single merged Xray for regular profiles)
-  // these are not merged. Lets many xray-full profiles share one sing-box box.
+  // Opaque full configs, each its own instance backing a socks outbound already
+  // in `config`. Never merged into `xray_config`.
   repeated string xray_full_configs = 10;
 }
 
