@@ -581,17 +581,22 @@ func (s *server) Test(ctx context.Context, in *gen.TestReq) (*gen.TestResp, erro
 	}
 	defer env.close()
 
+	// Held, not re-read: StopTest rearms a fresh context, uncancelled.
+	testCtx := test_utils.TestContext()
+
 	// A muxed config needs a warm connection; the live instance already is one.
 	twice := !in.GetTestCurrent()
-	results := test_utils.BatchURLTest(test_utils.TestContext(), env.box, env.tags, in.GetUrl(),
+	results := test_utils.BatchURLTest(testCtx, env.box, env.tags, in.GetUrl(),
 		int(in.GetMaxConcurrency()), twice, time.Duration(in.GetTestTimeoutMs())*time.Millisecond)
 
 	res := make([]*gen.URLTestResp, 0, len(results))
+	failed := make(map[string]bool, len(results))
 	for idx, data := range results {
 		errStr := ""
 		if data.Error != nil {
 			errStr = data.Error.Error()
 		}
+		failed[env.tags[idx]] = errStr != ""
 		res = append(res, &gen.URLTestResp{
 			OutboundTag: To(env.tags[idx]),
 			LatencyMs:   To(int32(data.Duration.Milliseconds())),
@@ -599,7 +604,22 @@ func (s *server) Test(ctx context.Context, in *gen.TestReq) (*gen.TestResp, erro
 		})
 	}
 
-	return &gen.TestResp{Results: res}, nil
+	out := &gen.TestResp{Results: res}
+	// `defer env.close()` tears the box down on return, so this cannot wait.
+	var pending []string
+	for _, tag := range in.VpnEndpointTags {
+		if failed[tag] {
+			pending = append(pending, tag)
+		}
+	}
+	if len(pending) > 0 {
+		timeout := defaultVPNStatusTimeout
+		if ms := in.GetVpnStatusTimeoutMs(); ms > 0 {
+			timeout = time.Duration(ms) * time.Millisecond
+		}
+		out.VpnStatus = collectVPNStatus(testCtx, env.box, pending, timeout)
+	}
+	return out, nil
 }
 
 func (s *server) StopTest(ctx context.Context, in *gen.EmptyReq) (*gen.EmptyResp, error) {

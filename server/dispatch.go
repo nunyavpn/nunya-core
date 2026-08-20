@@ -136,6 +136,9 @@ var handlers = map[string]handlerFn{
 	"QuerySpeedTest":      handle(globalServer.QuerySpeedTest),
 	"QueryCountryTest":    handle(globalServer.QueryCountryTest),
 	"GenWgKeyPair":        handle(globalServer.GenWgKeyPair),
+	"QueryVPNStatus":      handle(globalServer.QueryVPNStatus),
+	"SubmitVPNChallenge":  handle(globalServer.SubmitVPNChallenge),
+	"CancelVPNChallenge":  handle(globalServer.CancelVPNChallenge),
 }
 
 func dispatch(methodName string, payload []byte) ([]byte, error) {

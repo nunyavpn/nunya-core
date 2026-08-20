@@ -29,6 +29,10 @@ service LibcoreService {
   //
   rpc QueryAutoSelectors(EmptyReq) returns (QueryAutoSelectorsResponse);
   rpc AutoSelectorAction(AutoSelectorActionRequest) returns (ErrorResp);
+  //
+  rpc QueryVPNStatus(VPNStatusRequest) returns (VPNStatusResponse);
+  rpc SubmitVPNChallenge(SubmitVPNChallengeRequest) returns (ErrorResp);
+  rpc CancelVPNChallenge(SubmitVPNChallengeRequest) returns (ErrorResp);
 }
 
 message EmptyReq {}
@@ -91,10 +95,97 @@ message TestReq {
   // Opaque full configs, each its own instance backing a socks outbound already
   // in `config`. Never merged into `xray_config`.
   repeated string xray_full_configs = 10;
+  // Inspected inside the same test box: it dies with the RPC, so no later query can.
+  repeated string vpn_endpoint_tags = 11;
+  // Bounded wait for those tags to leave `connecting`; 0 picks the core default.
+  optional int32 vpn_status_timeout_ms = 12 [default = 0];
 }
 
 message TestResp {
   repeated URLTestResp results = 1;
+  // Only for vpn_endpoint_tags whose URL probe genuinely failed.
+  repeated VPNEndpointStatus vpn_status = 2;
+}
+
+message VPNChallengeChoice {
+  optional string value = 1 [default = ""];
+  optional string label = 2 [default = ""];
+}
+
+message VPNChallengeField {
+  optional string submission_key = 1 [default = ""];
+  optional string name = 2 [default = ""];
+  optional string label = 3 [default = ""];
+  // text | password | select
+  optional string kind = 4 [default = ""];
+  optional string value = 5 [default = ""];
+  repeated VPNChallengeChoice options = 6;
+}
+
+// The endpoint is parked waiting for a human; nothing moves until Submit/Cancel.
+message VPNChallenge {
+  optional string endpoint_tag = 1 [default = ""];
+  optional string id = 2 [default = ""];
+  // openvpn: credentials|secret|message|open-url   openconnect: form|browser
+  optional string kind = 3 [default = ""];
+  optional string username = 4 [default = ""];
+  optional string message = 5 [default = ""];
+  optional string banner = 6 [default = ""];
+  optional string error = 7 [default = ""];
+  optional string url = 8 [default = ""];
+  // false => the answer is a secret and must be masked.
+  optional bool echo = 9 [default = false];
+  optional int64 deadline = 10 [default = 0];
+  repeated VPNChallengeField fields = 11;
+}
+
+// One openvpn/openconnect endpoint's tunnel state.
+message VPNEndpointStatus {
+  optional string tag = 1 [default = ""];
+  // connecting | auth-pending | connected | error
+  optional string state = 2 [default = ""];
+  optional string error = 3 [default = ""];
+  optional bool connected = 4 [default = false];
+  // Present only while connected.
+  repeated string ipv4 = 5;
+  repeated string ipv6 = 6;
+  repeated string dns = 7;
+  optional int32 mtu = 8 [default = 0];
+  optional int64 connected_since = 9 [default = 0];
+  optional string server = 10 [default = ""];
+  // openvpn: tunnel network; openconnect: transport.
+  optional string network = 11 [default = ""];
+  // Server-advertised routes, i.e. what a `preferred_by` route rule matches.
+  repeated string routes = 12;
+  repeated string excluded_routes = 13;
+  // Every suffix `preferred_by` matches: search domains plus pushed split-DNS suffixes.
+  repeated string search_domains = 14;
+  // openvpn only; openconnect reports its transport in `network` instead.
+  optional string cipher = 15 [default = ""];
+  optional VPNChallenge challenge = 16;
+  // `error` is a rejected login; neither core prompts for config-supplied credentials.
+  optional bool auth_failed = 17 [default = false];
+}
+
+message VPNStatusRequest {
+  repeated string endpoint_tags = 1;
+  // Wait this long for a tag still handshaking; 0 answers with the current state.
+  optional int32 timeout_ms = 2 [default = 0];
+}
+
+message VPNStatusResponse {
+  repeated VPNEndpointStatus results = 1;
+}
+
+// Answers the challenge `challenge_id` on `endpoint_tag`: openvpn reads
+// username/password/secret, openconnect reads form_values keyed by submission_key.
+message SubmitVPNChallengeRequest {
+  optional string endpoint_tag = 1 [default = ""];
+  optional string challenge_id = 2 [default = ""];
+  optional string username = 3 [default = ""];
+  optional string password = 4 [default = ""];
+  optional string secret = 5 [default = ""];
+  map<string, string> form_values = 6;
 }
 
 message QueryStatsResp{
