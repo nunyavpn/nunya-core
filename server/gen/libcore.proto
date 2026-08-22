@@ -26,6 +26,8 @@ service LibcoreService {
   rpc QueryIPTest(EmptyReq) returns (QueryIPTestResponse);
   //
   rpc GenWgKeyPair(EmptyReq) returns (GenWgKeyPairResponse);
+
+  rpc InstallDashboard(InstallDashboardRequest) returns (ErrorResp);
   //
   rpc QueryAutoSelectors(EmptyReq) returns (QueryAutoSelectorsResponse);
   rpc AutoSelectorAction(AutoSelectorActionRequest) returns (ErrorResp);
@@ -380,4 +382,10 @@ message AutoSelectorActionRequest {
   // recheck = force a full sweep now; select = pin the group to `member`
   optional string action = 2 [default = ""];
   optional string member = 3 [default = ""];
+}
+
+// Throne downloads the archive (proxy settings apply there); the core has the zip reader.
+message InstallDashboardRequest {
+  optional string archive_path = 1 [default = ""];
+  optional string target_dir = 2 [default = ""];
 }
