@@ -15,7 +15,6 @@ import (
 	"github.com/sagernet/sing/service"
 )
 
-// A handshake plus auth takes seconds, well past where a URL probe gives up.
 const defaultVPNStatusTimeout = 10 * time.Second
 
 // Both protocols spell their terminal failure the same way.
@@ -182,7 +181,6 @@ func openConnectStatusToProto(tag string, status adapter.OpenConnectStatus) *gen
 	return out
 }
 
-// Takes the box explicitly so a throwaway test box resolves the same way.
 func lookupEndpoint(box *boxbox.Box, tag string) (adapter.Endpoint, error) {
 	if box == nil {
 		return nil, errInstanceNotRunning
@@ -223,7 +221,6 @@ func vpnStatusSettled(status *gen.VPNEndpointStatus) bool {
 	return status.GetConnected() || status.GetState() == vpnStateError || status.GetChallenge() != nil
 }
 
-// A non-positive timeout reports the current state without waiting.
 func awaitVPNStatus(ctx context.Context, endpoint *vpnEndpoint, timeout time.Duration) *gen.VPNEndpointStatus {
 	if timeout <= 0 {
 		return endpoint.snapshot()
@@ -247,7 +244,6 @@ func awaitVPNStatus(ctx context.Context, endpoint *vpnEndpoint, timeout time.Dur
 	}
 }
 
-// Every openvpn/openconnect endpoint in the box, in a stable order.
 func vpnEndpointTags(box *boxbox.Box) []string {
 	if box == nil {
 		return nil
@@ -290,7 +286,6 @@ func (s *server) QueryVPNStatus(ctx context.Context, in *gen.VPNStatusRequest) (
 	timeout := time.Duration(in.GetTimeoutMs()) * time.Millisecond
 	box := currentBox()
 	tags := in.EndpointTags
-	// No tags asked for means every live endpoint.
 	if len(tags) == 0 {
 		tags = vpnEndpointTags(box)
 	}
@@ -299,7 +294,6 @@ func (s *server) QueryVPNStatus(ctx context.Context, in *gen.VPNStatusRequest) (
 	}, nil
 }
 
-// A challenge that moved on between poll and submit answers with ErrNoPending*Challenge.
 func vpnChallengeResult(action string, in *gen.SubmitVPNChallengeRequest, err error) *gen.ErrorResp {
 	if err == nil {
 		return &gen.ErrorResp{Error: To("")}

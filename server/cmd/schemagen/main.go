@@ -1,6 +1,4 @@
-// Command schemagen writes the sing-box configuration JSON schema for the core this repo pins,
-// which the GUI bundles as res/schema/sing-box.json. Run it through script/gen_schema.sh so the
-// build tags match the shipped core.
+// Run through script/gen_schema.sh so the build tags match the shipped core; the GUI bundles the output as res/schema/sing-box.json.
 package main
 
 import (

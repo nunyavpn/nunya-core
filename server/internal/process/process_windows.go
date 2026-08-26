@@ -16,20 +16,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// startChild launches the extra process de-elevated to the unprivileged
-// interactive user when the Core runs elevated, else as-is.
-//
-// Windows has no setuid: a UAC-elevated parent spawns children with its own
-// elevated admin token. We obtain a non-elevated primary token for the real
-// user and launch the child with it.
-//
-// We deliberately do NOT use Go's exec.Cmd + SysProcAttr.Token: that routes
-// through CreateProcessAsUser, which requires SeAssignPrimaryTokenPrivilege — a
-// privilege a UAC-elevated administrator does not hold (only SYSTEM does), so it
-// fails with ERROR_PRIVILEGE_NOT_HELD ("a required privilege is not held by the
-// client"). We instead call CreateProcessWithTokenW, which needs only
-// SeImpersonatePrivilege, held by elevated admins.
-// See https://github.com/throneproj/Throne/issues/1482.
+// exec.Cmd+SysProcAttr.Token routes through CreateProcessAsUser, needing SeAssignPrimaryTokenPrivilege that elevated admins lack; CreateProcessWithTokenW needs only SeImpersonatePrivilege (#1482).
 func startChild(path string, args []string, noOut bool) (running, error) {
 	self, err := selfToken()
 	if err != nil {
@@ -38,7 +25,7 @@ func startChild(path string, args []string, noOut bool) (running, error) {
 	defer self.Close()
 
 	if !self.IsElevated() {
-		return startCmd(newCmd(path, args, noOut)) // not elevated, run as-is
+		return startCmd(newCmd(path, args, noOut))
 	}
 
 	tok, err := unprivilegedToken(self)
@@ -52,21 +39,13 @@ func startChild(path string, args []string, noOut bool) (running, error) {
 
 var procCreateProcessWithTokenW = windows.NewLazySystemDLL("advapi32.dll").NewProc("CreateProcessWithTokenW")
 
-// startWithToken launches path+args under tok via CreateProcessWithTokenW, with
-// stdout/stderr funnelled into the Throne log and no console window.
-//
-// CreateProcessWithTokenW does not inherit arbitrary handles, but for a 64-bit
-// child the secondary-logon service still duplicates the three std handles into
-// it, so redirected output works without leaking any other handle to the
-// de-privileged child.
+// CreateProcessWithTokenW inherits no arbitrary handles, but the secondary-logon service still duplicates the three std handles into a 64-bit child.
 func startWithToken(path string, args []string, noOut bool, tok windows.Token) (running, error) {
 	exe, err := exec.LookPath(path)
 	if err != nil {
 		return nil, err
 	}
 
-	// stdout/stderr: the child writes the (inheritable) write ends; we read the
-	// read ends. stdin is the null device so the child has a valid handle.
 	outR, outW, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -112,7 +91,7 @@ func startWithToken(path string, args []string, noOut bool, tok windows.Token) (
 		return nil, err
 	}
 
-	// dwLogonFlags 0: don't load the user profile (the old launch didn't either).
+	// dwLogonFlags 0: don't load the user profile.
 	const createFlags = windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_NO_WINDOW
 	var pi windows.ProcessInformation
 	r1, _, e1 := procCreateProcessWithTokenW.Call(
@@ -130,8 +109,7 @@ func startWithToken(path string, args []string, noOut bool, tok windows.Token) (
 	runtime.KeepAlive(appName)
 	runtime.KeepAlive(cmdLine)
 	runtime.KeepAlive(envBlock)
-	// Our copies of the child's ends are no longer needed; closing the write
-	// ends is what lets the read ends see EOF when the child exits.
+	// Closing our write ends is what lets the read ends see EOF when the child exits.
 	closeAll(outW, errW, nul)
 	if r1 == 0 {
 		closeAll(outR, errR)
@@ -151,9 +129,7 @@ func startWithToken(path string, args []string, noOut bool, tok windows.Token) (
 	return &tokenRunner{hProcess: pi.Process, done: done}, nil
 }
 
-// tokenRunner is the running handle for a child launched via
-// CreateProcessWithTokenW: it owns the process handle and waits for the two
-// stdout/stderr pumps (signalled on done) to drain before reporting exit.
+// done receives once per output pump; Wait must drain both before closing the handle.
 type tokenRunner struct {
 	mu       sync.Mutex
 	hProcess windows.Handle
@@ -168,8 +144,8 @@ func (t *tokenRunner) Wait() error {
 		return nil
 	}
 	_, err := windows.WaitForSingleObject(h, windows.INFINITE)
-	<-t.done // stdout drained
-	<-t.done // stderr drained
+	<-t.done
+	<-t.done
 	t.mu.Lock()
 	if t.hProcess != 0 {
 		_ = windows.CloseHandle(t.hProcess)
@@ -179,8 +155,7 @@ func (t *tokenRunner) Wait() error {
 	return err
 }
 
-// Kill terminates the child. It is a no-op once Wait has reaped the process, so
-// the handle that Wait closes is never used after it is closed.
+// No-op once Wait has reaped the process, so the handle Wait closed is never reused.
 func (t *tokenRunner) Kill() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -190,7 +165,6 @@ func (t *tokenRunner) Kill() error {
 	return windows.TerminateProcess(t.hProcess, 1)
 }
 
-// makeInheritable marks f's handle inheritable so it can be handed to the child.
 func makeInheritable(f *os.File) error {
 	return windows.SetHandleInformation(windows.Handle(f.Fd()),
 		windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT)
@@ -202,8 +176,6 @@ func closeAll(files ...*os.File) {
 	}
 }
 
-// makeEnvBlock builds a CREATE_UNICODE_ENVIRONMENT block: each "k=v" UTF-16
-// encoded and NUL-terminated, the whole list terminated by one more NUL.
 func makeEnvBlock(env []string) ([]uint16, error) {
 	var block []uint16
 	for _, e := range env {
@@ -216,7 +188,7 @@ func makeEnvBlock(env []string) ([]uint16, error) {
 		}
 		block = append(block, u...) // u already ends in NUL
 	}
-	block = append(block, 0) // terminate the block
+	block = append(block, 0)
 	if len(block) == 1 {
 		block = append(block, 0) // an empty environment still needs a double NUL
 	}
@@ -230,10 +202,6 @@ func selfToken() (windows.Token, error) {
 	return tok, err
 }
 
-// unprivilegedToken returns a primary token for the real, non-elevated user,
-// trying in order: the UAC linked token of the same user (the common
-// elevated-admin case), the active console session user, then the interactive
-// shell (explorer.exe) user (covers a SYSTEM service).
 func unprivilegedToken(self windows.Token) (windows.Token, error) {
 	if t, err := linkedToken(self); err == nil {
 		return t, nil
@@ -325,10 +293,7 @@ func findProcess(name string) (uint32, error) {
 	return 0, fmt.Errorf("process %q not found", name)
 }
 
-// createSecureConfigFile creates the extra-process config file. On Windows
-// %TEMP% is a per-user directory and creating a symlink needs a privilege
-// unprivileged users lack, so an ordinary O_CREATE|O_EXCL temp file (the
-// default of os.CreateTemp) already creates a clean, un-hijackable file.
+// %TEMP% is per-user and symlink creation needs a privilege, so os.CreateTemp's O_CREATE|O_EXCL file is already un-hijackable.
 func createSecureConfigFile() (*os.File, string, error) {
 	f, err := os.CreateTemp("", "throne-extra-*.conf")
 	if err != nil {
@@ -337,13 +302,7 @@ func createSecureConfigFile() (*os.File, string, error) {
 	return f, f.Name(), nil
 }
 
-// makeConfigReadable best-effort grants the local Users group read access so a
-// de-privileged child can read the config. To avoid a path swap between
-// creation and the ACL change, it reopens the file WITHOUT following a reparse
-// point and verifies (by volume + file id) that it is the very object we
-// created before touching the DACL through that handle. A failure is
-// non-fatal: with the linked-token path the child is the same user at lower
-// integrity and can already read it.
+// Best-effort: every failure returns nil, since on the linked-token path the child is the same user and can already read the file.
 func makeConfigReadable(f *os.File) error {
 	usersSid, err := windows.CreateWellKnownSid(windows.WinBuiltinUsersSid)
 	if err != nil {
@@ -382,10 +341,7 @@ func makeConfigReadable(f *os.File) error {
 	return nil
 }
 
-// reopenSameObject opens f's path for DACL editing (WRITE_DAC|READ_CONTROL)
-// without following a final reparse point, then confirms it is the same
-// filesystem object as f (same volume + file id, not a reparse point). This
-// defeats a symlink/path swap performed after the file was created.
+// Reopens without following a final reparse point and re-checks volume+file id, defeating a path swap made after creation.
 func reopenSameObject(f *os.File) (windows.Handle, error) {
 	namep, err := windows.UTF16PtrFromString(f.Name())
 	if err != nil {
