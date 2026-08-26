@@ -10,8 +10,6 @@ github.com/RyuaNerin/go-krypto v1.3.0 h1:smavTzSMAx8iuVlGb4pEwl9MD2qicqMzuXR2QWp
 github.com/RyuaNerin/go-krypto v1.3.0/go.mod h1:9R9TU936laAIqAmjcHo/LsaXYOZlymudOAxjaBf62UM=
 github.com/RyuaNerin/testingutil v0.1.0 h1:IYT6JL57RV3U2ml3dLHZsVtPOP6yNK7WUVdzzlpNrss=
 github.com/RyuaNerin/testingutil v0.1.0/go.mod h1:yTqj6Ta/ycHMPJHRyO12Mz3VrvTloWOsy23WOZH19AA=
-github.com/Throneproj/sing-box v1.11.16-0.20260823195512-cbe7088a0723 h1:V6PEDeoARGkN2MpLkp8Gp6ZMuFUK2wiIwBKYvDDE1dU=
-github.com/Throneproj/sing-box v1.11.16-0.20260823195512-cbe7088a0723/go.mod h1:vI/lHCMPNbd4jEp9qBhByLxOQytFIo+0ZWfiA5IJ3os=
 github.com/ajg/form v1.5.1 h1:t9c7v8JUKu/XxOGBU0yjNpaMloxGEJhUkqFRq0ibGeU=
 github.com/ajg/form v1.5.1/go.mod h1:uL1WgH+h2mgNtvBq0339dVnzXdBETtL2LeUXaIv25UY=
 github.com/akutz/memconn v0.1.0 h1:NawI0TORU4hcOMsMr11g7vwlCdkYeLKXBcxWu2W/P8A=
@@ -389,8 +387,10 @@ github.com/tailscale/web-client-prebuilt v0.0.0-20250124233751-d4cd19a26976 h1:U
 github.com/tailscale/web-client-prebuilt v0.0.0-20250124233751-d4cd19a26976/go.mod h1:agQPE6y6ldqCOui2gkIh7ZMztTkIQKH049tv8siLuNQ=
 github.com/tc-hib/winres v0.2.1 h1:YDE0FiP0VmtRaDn7+aaChp1KiF4owBiJa5l964l5ujA=
 github.com/tc-hib/winres v0.2.1/go.mod h1:C/JaNhH3KBvhNKVbvdlDWkbMDO9H4fKKDaN7/07SSuk=
-github.com/throneproj/wireguard-go v0.0.0-20260823194716-e1dd521889a6 h1:eglhMeLcq2PUouJEMkuuw8hQlSuzrsms0HhavRkIDDk=
-github.com/throneproj/wireguard-go v0.0.0-20260823194716-e1dd521889a6/go.mod h1:er10sELpmzLXq7S7Pbc1Zsbyapcr+/gxNAHKTo6fzVA=
+github.com/throneproj/sing-box v1.11.16-0.20260826185710-447f3527e6c6 h1:/lH/LK3dApZsnvgRhTpmxsCRd6Nqke1FCmkMTER4JkE=
+github.com/throneproj/sing-box v1.11.16-0.20260826185710-447f3527e6c6/go.mod h1:CBRhQ62OHGOjCHvkkyM09wuJ9emUmeClw33QUjcIJeE=
+github.com/throneproj/wireguard-go v0.0.0-20260826184406-6afb6c3abbbf h1:pIM0l9nExIqsZ6Mto6jgvzhErb5hkgC+tnVTo8++5MM=
+github.com/throneproj/wireguard-go v0.0.0-20260826184406-6afb6c3abbbf/go.mod h1:er10sELpmzLXq7S7Pbc1Zsbyapcr+/gxNAHKTo6fzVA=
 github.com/throneproj/xray-core v1.251015.1-0.20260808214837-735fffaa66af h1:VLz6512TXXZjzvSLrybL1Y3Vg+QOYkpi23jjhL3FoNo=
 github.com/throneproj/xray-core v1.251015.1-0.20260808214837-735fffaa66af/go.mod h1:wukQoBGnQ6GaLTGuKwv8rCTgf80QxPj+6iznDZHQEWo=
 github.com/tidwall/gjson v1.14.2/go.mod h1:/wbyibRr2FHMks5tjHJ5F8dMZh3AcwJEMf5vlfC0lxk=
