@@ -9,6 +9,7 @@ import (
 	"ThroneCore/internal/sys"
 	"ThroneCore/internal/wg"
 	"ThroneCore/internal/xray"
+	"ThroneCore/internal/xraydns"
 	"ThroneCore/test_utils"
 	"archive/zip"
 	"context"
@@ -22,6 +23,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofrs/uuid/v5"
@@ -32,7 +34,6 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/service"
 	"github.com/xtls/xray-core/core"
-	xthrone "github.com/xtls/xray-core/throne"
 	xinternet "github.com/xtls/xray-core/transport/internet"
 )
 
@@ -229,18 +230,35 @@ func startXrayFullGates(configs []string, idle time.Duration, prepare func(*core
 	return gates, nil
 }
 
+// One per start, never a package global: a probe box must not answer for the running instance.
+type boxContextHolder struct {
+	ctx atomic.Pointer[context.Context]
+}
+
+func (h *boxContextHolder) publish(box *boxbox.Box) {
+	if box == nil {
+		return
+	}
+	boxCtx := box.Context()
+	h.ctx.Store(&boxCtx)
+}
+
+func (h *boxContextHolder) get() context.Context {
+	if stored := h.ctx.Load(); stored != nil {
+		return *stored
+	}
+	return nil
+}
+
 // Must run between core.New and Start; both settings keep the instance off an active TUN.
-func xrayPreparer(dnsAddr, dnsStrategy string) func(*core.Instance) error {
+func xrayPreparer(dnsStrategy string, boxCtx xraydns.BoxProvider) func(*core.Instance) error {
 	return func(instance *core.Instance) error {
 		instance.SetEgress(currentEgress())
-		if dnsAddr == "" {
+		if dnsStrategy == "" || boxCtx == nil {
 			return nil
 		}
-		resolver, err := xthrone.NewResolver(dnsAddr)
-		if err != nil {
-			return E.Cause(err, "failed to create Xray outbound DNS resolver")
-		}
-		instance.SetOutboundDNS(resolver, xinternet.ParseDomainStrategy(dnsStrategy))
+		// One resolver per instance: it caches the dns-direct transport of the box it was prepared for.
+		instance.SetOutboundDNS(xraydns.New(boxCtx), xinternet.ParseDomainStrategy(dnsStrategy))
 		return nil
 	}
 }
@@ -260,7 +278,11 @@ type testEnv struct {
 // `current` measures the running instance instead of building one, and owns nothing.
 func prepareTestEnv(current bool, needXray bool, xrayConfig string, xrayFullConfigs []string,
 	coreConfig string, tags []string, useDefaultOutbound bool,
-	prepareXray func(*core.Instance) error) (*testEnv, error) {
+	xrayDNSStrategy string) (*testEnv, error) {
+
+	// Owned here, not by the caller: this builds the probe box the Xray instances below resolve through.
+	var boxCtx boxContextHolder
+	prepareXray := xrayPreparer(xrayDNSStrategy, boxCtx.get)
 
 	if current {
 		box := currentBox()
@@ -312,7 +334,7 @@ func prepareTestEnv(current bool, needXray bool, xrayConfig string, xrayFullConf
 	}
 	cleanups = append(cleanups, func() { closeXrayInstances(fullXray) })
 
-	box, cancel, err := boxmain.Create([]byte(coreConfig))
+	box, cancel, err := boxmain.Create([]byte(coreConfig), boxCtx.publish)
 	if err != nil {
 		unwind()
 		return nil, err
@@ -405,7 +427,9 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 
 	autoRedirectMark.Store(autoRedirectMarkFor([]byte(in.GetCoreConfig())))
 
-	prepareXray := xrayPreparer(in.GetXrayOutboundDnsAddress(), in.GetXrayOutboundDnsStrategy())
+	// Filled in below, once boxmain.Create has built the box these sidecars resolve through.
+	var boxCtx boxContextHolder
+	prepareXray := xrayPreparer(in.GetXrayOutboundDnsStrategy(), boxCtx.get)
 
 	if *in.NeedXray {
 		if in.GetXrayLazyStart() {
@@ -447,7 +471,7 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 		setXrayFullGates(gates)
 	}
 
-	box, cancel, err := boxmain.Create([]byte(*in.CoreConfig))
+	box, cancel, err := boxmain.Create([]byte(*in.CoreConfig), boxCtx.publish)
 	if err != nil {
 		if extraProcess != nil {
 			extraProcess.Stop()
@@ -562,7 +586,7 @@ func (s *server) CheckConfig(ctx context.Context, in *gen.LoadConfigReq) (out *g
 func (s *server) Test(ctx context.Context, in *gen.TestReq) (*gen.TestResp, error) {
 	env, err := prepareTestEnv(in.GetTestCurrent(), in.GetNeedXray(), in.GetXrayConfig(),
 		in.XrayFullConfigs, in.GetConfig(), in.OutboundTags, in.GetUseDefaultOutbound(),
-		xrayPreparer(in.GetXrayOutboundDnsAddress(), in.GetXrayOutboundDnsStrategy()))
+		in.GetXrayOutboundDnsStrategy())
 	if err != nil {
 		if errors.Is(err, errInstanceNotRunning) {
 			return &gen.TestResp{Results: []*gen.URLTestResp{{
@@ -643,7 +667,7 @@ func (s *server) IPTest(ctx context.Context, in *gen.IPTestRequest) (*gen.IPTest
 	// Always builds its own box: there is no test-current variant of an IP test.
 	env, err := prepareTestEnv(false, in.GetNeedXray(), in.GetXrayConfig(),
 		in.XrayFullConfigs, in.GetConfig(), in.OutboundTags, in.GetUseDefaultOutbound(),
-		xrayPreparer(in.GetXrayOutboundDnsAddress(), in.GetXrayOutboundDnsStrategy()))
+		in.GetXrayOutboundDnsStrategy())
 	if err != nil {
 		return nil, err
 	}
@@ -819,7 +843,7 @@ func (s *server) SpeedTest(ctx context.Context, in *gen.SpeedTestRequest) (*gen.
 
 	env, err := prepareTestEnv(in.GetTestCurrent(), in.GetNeedXray(), in.GetXrayConfig(),
 		in.XrayFullConfigs, in.GetConfig(), in.OutboundTags, in.GetUseDefaultOutbound(),
-		xrayPreparer(in.GetXrayOutboundDnsAddress(), in.GetXrayOutboundDnsStrategy()))
+		in.GetXrayOutboundDnsStrategy())
 	if err != nil {
 		if errors.Is(err, errInstanceNotRunning) {
 			return &gen.SpeedTestResponse{Results: []*gen.SpeedTestResult{{
