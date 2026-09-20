@@ -1,0 +1,135 @@
+# Publishes the artefacts the client repository consumes.
+#
+# The client does not build this repository. It pins a tag, downloads the assets below, and checks
+# them against SHA256SUMS — so the RPC contract between the two is a published, versioned interface
+# rather than a relative path into a sibling checkout.
+#
+# Assets per tag:
+#   nunya-core-<goos>-<goarch>[.exe]   standalone core, one per platform
+#   NunyaCore.xcframework.zip          gomobile library for the Apple packet tunnel extension
+#   nunya.proto                        the contract both sides generate from
+#   SHA256SUMS                         checksums over everything above
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: darwin,  goarch: arm64, runner: macos-14 }
+          - { goos: darwin,  goarch: amd64, runner: macos-13 }
+          - { goos: linux,   goarch: amd64, runner: ubuntu-latest }
+          - { goos: linux,   goarch: arm64, runner: ubuntu-24.04-arm }
+          - { goos: windows, goarch: amd64, runner: windows-latest }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install protoc and plugins
+        shell: bash
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # CGO is on: the core resolves DNS through cgo on Darwin and needs libresolv, and the Windows
+      # DNS manager binds winipcfg. Each runner is native for its target, so no cross toolchain.
+      - name: Build
+        shell: bash
+        env:
+          RELEASE: "1"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          DEST: dist
+        run: ./scripts/build.sh
+
+      - name: Name the artefact for its platform
+        shell: bash
+        run: |
+          ext=""
+          [[ "${{ matrix.goos }}" == "windows" ]] && ext=".exe"
+          mv "dist/nunya-core$ext" "dist/nunya-core-${{ matrix.goos }}-${{ matrix.goarch }}$ext"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nunya-core-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/nunya-core-*
+          if-no-files-found: error
+
+  xcframework:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install protoc and plugins
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - run: ./scripts/build-apple.sh
+      # Zipped rather than uploaded raw: an .xcframework is a directory, and release assets are files.
+      # -y preserves the symlinks inside the framework bundles, which codesign needs intact.
+      - name: Zip the xcframework
+        run: |
+          mkdir -p dist
+          ( cd build/apple && zip -qry ../../dist/NunyaCore.xcframework.zip NunyaCore.xcframework )
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NunyaCore.xcframework
+          path: dist/NunyaCore.xcframework.zip
+          if-no-files-found: error
+
+  publish:
+    needs: [build, xcframework]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: staging
+          merge-multiple: true
+
+      # The contract itself ships as an asset: the client generates its Rust bindings from this exact
+      # file, so a client pinned to a tag can never be built against a proto it did not pin.
+      - name: Collect assets and checksum them
+        run: |
+          mkdir -p dist
+          mv staging/* dist/
+          cp proto/nunya.proto dist/nunya.proto
+          ( cd dist && sha256sum * > SHA256SUMS )
+          cat dist/SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

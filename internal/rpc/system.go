@@ -5,7 +5,7 @@ import (
 	"os"
 	"runtime"
 
-	"ThroneCore/gen"
+	"github.com/nunyavpn/nunya-core/gen"
 )
 
 func (s *server) IsPrivileged(ctx context.Context, _ *gen.EmptyReq) (*gen.IsPrivilegedResponse, error) {

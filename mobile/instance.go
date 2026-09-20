@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"ThroneCore/internal/probe"
+	"github.com/nunyavpn/nunya-core/internal/probe"
 
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"

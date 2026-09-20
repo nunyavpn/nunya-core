@@ -1,9 +1,9 @@
 syntax = "proto2";
 
-package libcore;
-option go_package = "./;gen";
+package nunya;
+option go_package = "github.com/nunyavpn/nunya-core/gen;gen";
 
-service LibcoreService {
+service NunyaCoreService {
   rpc Start(LoadConfigReq) returns (ErrorResp);
   rpc Stop(EmptyReq) returns (ErrorResp);
   rpc CheckConfig(LoadConfigReq) returns (ErrorResp);
@@ -431,7 +431,7 @@ message AutoSelectorActionRequest {
   optional string member = 3 [default = ""];
 }
 
-// Throne downloads the archive (proxy settings apply there); the core has the zip reader.
+// Nunya downloads the archive (proxy settings apply there); the core has the zip reader.
 message InstallDashboardRequest {
   optional string archive_path = 1 [default = ""];
   optional string target_dir = 2 [default = ""];

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"ThroneCore/gen"
+	"github.com/nunyavpn/nunya-core/gen"
 
 	E "github.com/sagernet/sing/common/exceptions"
 )

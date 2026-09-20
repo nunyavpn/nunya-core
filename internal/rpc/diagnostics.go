@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"ThroneCore/gen"
+	"github.com/nunyavpn/nunya-core/gen"
 
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/xtls/xray-core/core"
@@ -33,7 +33,7 @@ const (
 	diagnosticsBlockRate          = 100 * time.Microsecond
 )
 
-const diagnosticsReadme = `Throne core diagnostics
+const diagnosticsReadme = `Nunya core diagnostics
 
 cpu.pprof             go tool pprof -http=: cpu.pprof
 heap-start.pprof      go tool pprof -http=: -diff_base heap-start.pprof heap-end.pprof
@@ -43,7 +43,7 @@ mutex-start.pprof     go tool pprof -http=: -diff_base mutex-start.pprof mutex-e
 trace.out             go tool trace trace.out (needs a Go toolchain at least as new as versions.go in meta.json)
 metrics-*.txt         runtime/metrics before and after the capture
 meta.json             versions, build and runtime details, what the capture did and anything that failed
-app/                  files attached by Throne
+app/                  files attached by Nunya
 
 Files the capture did not ask for, or that this runtime cannot produce, are absent.
 `

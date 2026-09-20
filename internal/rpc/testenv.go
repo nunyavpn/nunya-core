@@ -4,9 +4,9 @@ import (
 	"log"
 	"time"
 
-	"ThroneCore/internal/boxbox"
-	"ThroneCore/internal/boxmain"
-	"ThroneCore/internal/xray"
+	"github.com/nunyavpn/nunya-core/internal/boxbox"
+	"github.com/nunyavpn/nunya-core/internal/boxmain"
+	"github.com/nunyavpn/nunya-core/internal/xray"
 )
 
 type testEnv struct {

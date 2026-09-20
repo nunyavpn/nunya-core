@@ -5,9 +5,9 @@ import (
 	"errors"
 	"sync"
 
-	"ThroneCore/internal/boxbox"
-	"ThroneCore/internal/process"
-	"ThroneCore/internal/xray"
+	"github.com/nunyavpn/nunya-core/internal/boxbox"
+	"github.com/nunyavpn/nunya-core/internal/process"
+	"github.com/nunyavpn/nunya-core/internal/xray"
 
 	"github.com/xtls/xray-core/core"
 )

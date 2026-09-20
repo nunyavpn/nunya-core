@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"ThroneCore/gen"
-	"ThroneCore/internal/warp"
+	"github.com/nunyavpn/nunya-core/gen"
+	"github.com/nunyavpn/nunya-core/internal/warp"
 )
 
 const (

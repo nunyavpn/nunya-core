@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"ThroneCore/gen"
+	"github.com/nunyavpn/nunya-core/gen"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/protocol/group"

@@ -102,14 +102,14 @@ func makeConfigReadable(f *os.File) error {
 // When elevated, $TMPDIR is attacker-controlled: use a root-owned 0711 directory in sticky /tmp, which no unprivileged user can swap or list.
 func createSecureConfigFile() (*os.File, string, error) {
 	if os.Geteuid() != 0 {
-		f, err := os.CreateTemp("", "throne-extra-*.conf")
+		f, err := os.CreateTemp("", "nunya-extra-*.conf")
 		if err != nil {
 			return nil, "", err
 		}
 		return f, f.Name(), nil
 	}
 
-	dir, err := os.MkdirTemp("/tmp", "throne-extra-")
+	dir, err := os.MkdirTemp("/tmp", "nunya-extra-")
 	if err != nil {
 		return nil, "", err
 	}

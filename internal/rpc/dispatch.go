@@ -10,13 +10,13 @@ import (
 	runtimeDebug "runtime/debug"
 	"sync"
 
-	"ThroneCore/gen"
+	"github.com/nunyavpn/nunya-core/gen"
 
 	"google.golang.org/protobuf/proto"
 )
 
 type server struct {
-	gen.UnimplementedLibcoreServiceServer
+	gen.UnimplementedNunyaCoreServiceServer
 }
 
 var globalServer = &server{}
@@ -152,4 +152,4 @@ func dispatch(methodName string, payload []byte) ([]byte, error) {
 }
 
 // The wire path goes through the table above, not gRPC; keep the interface honest.
-var _ gen.LibcoreServiceServer = globalServer
+var _ gen.NunyaCoreServiceServer = globalServer

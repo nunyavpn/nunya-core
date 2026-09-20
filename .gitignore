@@ -1,8 +1,13 @@
 *.log
 *.pem
-*.json
 *.exe
 *.dat
 *.db
+
+# Generated from proto/nunya.proto by scripts/gen-proto.sh on every build.
 gen/*.pb.go
 gen/*.pb.*.go
+
+# Build output.
+build/
+dist/

@@ -7,8 +7,8 @@ import (
 	"runtime"
 	"sync/atomic"
 
-	"ThroneCore/gen"
-	"ThroneCore/internal/boxdns"
+	"github.com/nunyavpn/nunya-core/gen"
+	"github.com/nunyavpn/nunya-core/internal/boxdns"
 
 	"github.com/sagernet/sing-box/option"
 	tun "github.com/sagernet/sing-tun"

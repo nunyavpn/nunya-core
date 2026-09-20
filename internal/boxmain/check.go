@@ -5,7 +5,7 @@ import (
 
 	"github.com/sagernet/sing-box/include"
 
-	"ThroneCore/internal/boxbox"
+	"github.com/nunyavpn/nunya-core/internal/boxbox"
 )
 
 func Check(content []byte) error {

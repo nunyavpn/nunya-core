@@ -14,14 +14,14 @@ import (
 
 	"github.com/xtls/xray-core/core"
 
-	"ThroneCore/internal/boxmain"
-	"ThroneCore/internal/ipc"
-	"ThroneCore/internal/parentcheck"
-	"ThroneCore/internal/rpc"
+	"github.com/nunyavpn/nunya-core/internal/boxmain"
+	"github.com/nunyavpn/nunya-core/internal/ipc"
+	"github.com/nunyavpn/nunya-core/internal/parentcheck"
+	"github.com/nunyavpn/nunya-core/internal/rpc"
 
 	C "github.com/sagernet/sing-box/constant"
 
-	_ "ThroneCore/internal/distro/all"
+	_ "github.com/nunyavpn/nunya-core/internal/distro/all"
 )
 
 const (
@@ -69,7 +69,7 @@ func watchMemory() {
 
 func writeHeapProfile() (string, error) {
 	// Core runs privileged: a guessable clock-derived name lets a planted symlink turn this into a root-owned write anywhere.
-	f, err := os.CreateTemp("", "throne-core-heap-*.pprof")
+	f, err := os.CreateTemp("", "nunya-core-heap-*.pprof")
 	if err != nil {
 		return "", err
 	}
@@ -81,11 +81,11 @@ func writeHeapProfile() (string, error) {
 }
 
 func RunCore() {
-	socketName := os.Getenv("THRONE_CORE_SOCKET")
+	socketName := os.Getenv("NUNYA_CORE_SOCKET")
 	if socketName == "" {
-		log.Fatal("THRONE_CORE_SOCKET not set")
+		log.Fatal("NUNYA_CORE_SOCKET not set")
 	}
-	debug := os.Getenv("THRONE_CORE_DEBUG") == "1"
+	debug := os.Getenv("NUNYA_CORE_DEBUG") == "1"
 
 	parentcheck.CheckParentProcess()
 
@@ -124,7 +124,7 @@ func RunCore() {
 		log.Fatalf("failed to connect to GUI socket after 10 attempts: %v", err)
 	}
 
-	fmt.Println("Core Has Successfully Connected to Throne!")
+	fmt.Println("Core Has Successfully Connected to Nunya!")
 	rpc.Serve(conn, debug)
 	log.Fatal("IPC connection dropped, exiting")
 }

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"ThroneCore/gen"
-	"ThroneCore/internal/probe"
+	"github.com/nunyavpn/nunya-core/gen"
+	"github.com/nunyavpn/nunya-core/internal/probe"
 )
 
 func (s *server) Test(ctx context.Context, in *gen.TestReq) (*gen.TestResp, error) {

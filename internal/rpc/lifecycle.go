@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"ThroneCore/gen"
-	"ThroneCore/internal/boxmain"
-	"ThroneCore/internal/process"
-	"ThroneCore/internal/sysdns"
-	"ThroneCore/internal/xray"
+	"github.com/nunyavpn/nunya-core/gen"
+	"github.com/nunyavpn/nunya-core/internal/boxmain"
+	"github.com/nunyavpn/nunya-core/internal/process"
+	"github.com/nunyavpn/nunya-core/internal/sysdns"
+	"github.com/nunyavpn/nunya-core/internal/xray"
 
 	"github.com/google/shlex"
 	E "github.com/sagernet/sing/common/exceptions"

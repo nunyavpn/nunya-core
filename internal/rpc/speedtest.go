@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"ThroneCore/gen"
-	"ThroneCore/internal/probe"
+	"github.com/nunyavpn/nunya-core/gen"
+	"github.com/nunyavpn/nunya-core/internal/probe"
 )
 
 func speedTestResultToProto(res probe.SpeedTestResult) *gen.SpeedTestResult {

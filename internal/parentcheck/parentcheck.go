@@ -28,13 +28,13 @@ func CheckParentProcess() {
 	parentBase := filepath.Base(parentPath)
 
 	if runtime.GOOS == "windows" {
-		if !strings.EqualFold(parentDir, selfDir) || !strings.EqualFold(parentBase, "Throne.exe") {
+		if !strings.EqualFold(parentDir, selfDir) || !strings.EqualFold(parentBase, "Nunya.exe") {
 			log.Fatalf("parent check failed: unexpected parent %q, selfPath is %q", parentPath, selfPath)
 		}
 		return
 	}
 
-	if parentDir != selfDir || parentBase != "Throne" {
+	if parentDir != selfDir || parentBase != "Nunya" {
 		log.Fatalf("parent check failed: unexpected parent %q, selfPath is %q", parentPath, selfPath)
 	}
 }

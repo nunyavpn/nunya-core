@@ -1,4 +1,4 @@
-module ThroneCore
+module github.com/nunyavpn/nunya-core
 
 go 1.26.0
 

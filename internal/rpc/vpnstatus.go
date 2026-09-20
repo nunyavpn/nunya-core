@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"ThroneCore/gen"
-	"ThroneCore/internal/boxbox"
+	"github.com/nunyavpn/nunya-core/gen"
+	"github.com/nunyavpn/nunya-core/internal/boxbox"
 
 	"github.com/sagernet/sing-box/adapter"
 	E "github.com/sagernet/sing/common/exceptions"

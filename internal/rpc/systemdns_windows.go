@@ -3,8 +3,8 @@ package rpc
 import (
 	"context"
 
-	"ThroneCore/gen"
-	"ThroneCore/internal/boxdns"
+	"github.com/nunyavpn/nunya-core/gen"
+	"github.com/nunyavpn/nunya-core/internal/boxdns"
 )
 
 func (s *server) SetSystemDNS(ctx context.Context, in *gen.SetSystemDNSRequest) (*gen.EmptyResp, error) {

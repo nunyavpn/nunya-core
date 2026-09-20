@@ -7,9 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"ThroneCore/internal/boxbox"
-	"ThroneCore/internal/xray"
-	"ThroneCore/internal/xraydns"
+	"github.com/nunyavpn/nunya-core/internal/boxbox"
+	"github.com/nunyavpn/nunya-core/internal/xray"
+	"github.com/nunyavpn/nunya-core/internal/xraydns"
 
 	"github.com/xtls/xray-core/core"
 	xinternet "github.com/xtls/xray-core/transport/internet"
