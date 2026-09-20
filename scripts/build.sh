@@ -64,6 +64,9 @@ echo "==> built $DEST/$OUT_NAME"
 ls -lh "$DEST/$OUT_NAME"
 
 if [[ "${RELEASE:-0}" != "1" ]]; then
+  # DEST may already be absolute — the client's fetch-core.sh passes one — so resolve rather than
+  # prefixing $PWD.
+  ABS_DEST="$(cd "$DEST" && pwd)"
   echo "==> point a client dev build at it with:"
-  echo "    export NUNYA_CORE_PATH=\"$PWD/$DEST/$OUT_NAME\""
+  echo "    export NUNYA_CORE_PATH=\"$ABS_DEST/$OUT_NAME\""
 fi
