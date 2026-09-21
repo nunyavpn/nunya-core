@@ -73,18 +73,45 @@ is blocked, `GOPROXY=direct ./scripts/build.sh` fetches from the source reposito
 
 ## Releasing
 
-Push a tag. [`.github/workflows/release.yml`](.github/workflows/release.yml) builds every platform
-natively (CGO is on, so there is no cross-compilation), then publishes:
+[`.github/workflows/release.yml`](.github/workflows/release.yml) publishes two kinds of release, and
+builds every platform natively (CGO is on, so there is no cross-compilation):
+
+| Trigger | Tag | Assets |
+| --- | --- | --- |
+| push a `v*` tag | that tag | binaries, xcframework, proto, `SHA256SUMS` |
+| merge or push to `main` | `main-<date>-<sha>`, marked prerelease | the same, minus the xcframework |
 
 ```text
 nunya-core-<goos>-<goarch>[.exe]   one per platform
-NunyaCore.xcframework.zip          the Apple library
+NunyaCore.xcframework.zip          the Apple library — tagged releases only
 nunya.proto                        the contract
 SHA256SUMS                         checksums over all of the above
 ```
 
 The client's `scripts/fetch-core.sh` reads a pinned tag, downloads these, and verifies them against
-`SHA256SUMS` before unpacking anything.
+`SHA256SUMS` before unpacking anything. Pin any build, `main-*` included:
+
+```bash
+./scripts/fetch-core.sh --update main-20260921-9966e63    # in the client repo
+```
+
+**Every published tag is immutable.** `core.lock` pins a tag *plus* the digest of that release's
+`SHA256SUMS`, so a tag re-cut with different assets is reported as possible tampering — that check is
+the reason the lockfile is worth having. Main builds therefore derive their tag from the commit sha
+and never reuse one, and the workflow refuses to overwrite an existing release rather than quietly
+replacing its assets. To republish a commit, delete the release and its tag deliberately:
+
+```bash
+gh release delete main-20260921-9966e63 --yes --cleanup-tag
+```
+
+Old `main-*` prereleases are pruned to the newest ten after each successful publish. Pruning deletes
+a build whole, so a tag that still exists still means exactly what it meant when it was cut; `v*`
+releases are never touched.
+
+Everything published is a **release build**, `main-*` prereleases included — the parent check is
+what stops anything else on the machine from driving a root-privileged tunnel. A `noparentcheck`
+core is never published; development cores come from `fetch-core.sh --source`.
 
 ## Scope
 

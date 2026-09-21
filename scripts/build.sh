@@ -24,19 +24,17 @@ else
   DEST="${DEST:-build/dev/${GOOS_}-${GOARCH_}}"
 fi
 
-# with_clash_api is not about exposing a control port: its mere presence is what makes sing-box
-# construct the traffic manager that QueryStats reads (see needClashAPI in internal/boxbox/box.go).
-# The client's generated config leaves external_controller unset.
-TAGS="with_clash_api,with_gvisor,with_quic,with_wireguard,with_utls,with_dhcp,badlinkname,tfogo_checklinkname0"
-
+# Kept in scripts/tags.sh so CI vets and tests the same program this builds; see the rationale there.
+#
 # In release builds the core refuses to run unless its parent is a binary named `Nunya` in the same
 # directory (internal/parentcheck). During development the core lives under build/ and the parent is
 # cargo or the dev binary, so the check has to come off. The two are NOT interchangeable: point a
 # dev run at a release core and it starts, then silently never connects.
 if [[ "${RELEASE:-0}" != "1" ]]; then
-  TAGS="$TAGS,noparentcheck"
+  TAGS="$(./scripts/tags.sh --dev)"
   echo "==> development build: parent process check DISABLED"
 else
+  TAGS="$(./scripts/tags.sh)"
   echo "==> release build: parent process check enforced"
 fi
 

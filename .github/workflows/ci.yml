@@ -1,9 +1,14 @@
+# Pull requests only. A push to main is covered by release.yml, which vets, tests and builds every
+# platform before it publishes — running this as well would build the same commit twice.
+
 name: ci
 
 on:
-  push:
-    branches: [main]
   pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -27,9 +32,18 @@ jobs:
       - uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # A dev build, unlike release.yml: this proves the tree compiles, and the parent check is the
+      # one thing a PR cannot exercise anyway.
       - name: Build
         shell: bash
         run: ./scripts/build.sh
+
+      # The same tag set build.sh just used, from scripts/tags.sh — vetting a different set
+      # type-checks a different program from the one that ships.
       - name: Vet
         shell: bash
-        run: go vet -tags "with_clash_api,with_gvisor,with_quic,with_wireguard,with_utls,with_dhcp,badlinkname,tfogo_checklinkname0,noparentcheck" ./...
+        run: go vet -tags "$(./scripts/tags.sh --dev)" ./...
+      - name: Test
+        shell: bash
+        run: go test -tags "$(./scripts/tags.sh --dev)" ./...

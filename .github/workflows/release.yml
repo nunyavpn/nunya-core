@@ -4,27 +4,76 @@
 # them against SHA256SUMS — so the RPC contract between the two is a published, versioned interface
 # rather than a relative path into a sibling checkout.
 #
-# Assets per tag:
+# Assets per release:
 #   nunya-core-<goos>-<goarch>[.exe]   standalone core, one per platform
 #   NunyaCore.xcframework.zip          gomobile library for the Apple packet tunnel extension
 #   nunya.proto                        the contract both sides generate from
 #   SHA256SUMS                         checksums over everything above
+#
+# Two kinds of release, and the difference is deliberate:
+#
+#   v* tag       a real release. Full artefact set, including the xcframework.
+#   push to main a prerelease tagged main-<date>-<sha>, binaries only.
+#
+# Every published tag is IMMUTABLE. The client's core.lock pins a tag plus the digest of that
+# release's SHA256SUMS, and fetch-core.sh reports a re-cut tag as possible tampering — which is the
+# whole point of the check. So main builds derive their tag from the commit sha and never reuse one,
+# and this workflow refuses to overwrite a release that already exists rather than quietly re-cutting
+# it. Old main-* prereleases are pruned by age at the end, which deletes builds nobody pinned while
+# leaving every tag that still exists honest.
 
 name: release
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to build"
+        description: "Tag to build and publish"
         required: true
 
 permissions:
   contents: write
 
+# Not cancel-in-progress: each push to main earns its own immutable release, and cancelling would
+# silently skip a commit rather than merely delaying it.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  # Runs beside the build matrix rather than in front of it, so a green run is not serialised behind
+  # it; `publish` needs both, so nothing reaches a release without it having passed.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install protoc and plugins
+        shell: bash
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # gen/*.pb.go is generated and gitignored, so vet and test cannot resolve the gen package
+      # without this.
+      - name: Generate the bindings
+        run: ./scripts/gen-proto.sh
+
+      - name: Vet
+        run: go vet -tags "$(./scripts/tags.sh --dev)" ./...
+      - name: Test
+        run: go test -tags "$(./scripts/tags.sh --dev)" ./...
+
   build:
     strategy:
       fail-fast: false
@@ -53,6 +102,11 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # RELEASE=1 on every published build, main prereleases included: the parent check is what stops
+      # anything else on the machine from driving a root-privileged tunnel, and a downloadable core
+      # with it off is a liability no convenience pays for. Development cores come from
+      # `fetch-core.sh --source`, never from here.
+      #
       # CGO is on: the core resolves DNS through cgo on Darwin and needs libresolv, and the Windows
       # DNS manager binds winipcfg. Each runner is native for its target, so no cross toolchain.
       - name: Build
@@ -77,7 +131,11 @@ jobs:
           path: dist/nunya-core-*
           if-no-files-found: error
 
+  # Tagged releases only. It needs a macOS runner driving gomobile under full Xcode, which is by far
+  # the slowest job here, and it is unusable until the packet tunnel extension can be signed — so a
+  # merge does not pay for one.
   xcframework:
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -108,10 +166,54 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [build, xcframework]
+    needs: [check, build, xcframework]
+    # `xcframework` is skipped on main, and a skipped dependency would otherwise skip this job too.
+    # Spelled out rather than `always()`, so a genuine failure anywhere still stops the release.
+    if: >-
+      !cancelled()
+      && needs.check.result == 'success'
+      && needs.build.result == 'success'
+      && (needs.xcframework.result == 'success' || needs.xcframework.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # A main build's tag carries the sha, so it is unique per commit and a pinned client stays
+      # valid forever. The date is first only so the releases page sorts readably.
+      - name: Decide the tag
+        id: meta
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"; prerelease=false
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            tag="${{ github.ref_name }}"; prerelease=false
+          else
+            tag="main-$(date -u +%Y%m%d)-$(git rev-parse --short=7 HEAD)"; prerelease=true
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "==> publishing as $tag (prerelease=$prerelease)"
+
+      # A re-run on an already-published commit would otherwise replace that release's assets, which
+      # is indistinguishable from tampering to every client that pinned it.
+      - name: Refuse to overwrite an existing release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.meta.outputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            cat >&2 <<MSG
+          error: a release already exists for $tag
+
+            Published tags are immutable: the client's core.lock pins this tag plus the digest of its
+            SHA256SUMS, and replacing the assets would make every pinned client report tampering.
+
+            To republish this commit deliberately, delete the release and its tag first:
+              gh release delete $tag --yes --cleanup-tag
+          MSG
+            exit 1
+          fi
+
       - uses: actions/download-artifact@v4
         with:
           path: staging
@@ -129,7 +231,53 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          tag_name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ steps.meta.outputs.prerelease }}
           files: dist/*
           fail_on_unmatched_files: true
           generate_release_notes: true
+
+      # Tells whoever finds this build how to pin it, since a main tag is not guessable.
+      - name: Summarise
+        run: |
+          {
+            echo "### nunya-core \`${{ steps.meta.outputs.tag }}\`"
+            echo
+            echo "Pin it from the client:"
+            echo '```bash'
+            echo "./scripts/fetch-core.sh --update ${{ steps.meta.outputs.tag }}"
+            echo '```'
+            echo
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Keeps the releases page usable without ever rewriting a tag: old main-* builds are deleted
+  # whole, so a tag that still exists still means exactly what it meant when it was cut. Tagged
+  # releases are never touched.
+  prune:
+    needs: publish
+    if: github.event_name == 'push' && github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Delete all but the newest 10 main prereleases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          keep=10
+          mapfile -t stale < <(
+            gh release list --limit 200 --json tagName,isPrerelease,createdAt \
+              --jq "[.[] | select(.isPrerelease and (.tagName | startswith(\"main-\")))]
+                    | sort_by(.createdAt) | reverse | .[${keep}:] | .[].tagName"
+          )
+          if [[ ${#stale[@]} -eq 0 ]]; then
+            echo "==> nothing to prune"
+            exit 0
+          fi
+          for tag in "${stale[@]}"; do
+            echo "==> pruning $tag"
+            gh release delete "$tag" --yes --cleanup-tag
+          done
