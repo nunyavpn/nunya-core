@@ -336,7 +336,15 @@ jobs:
   # v0 betas included, are never touched.
   prune:
     needs: [warmup, release]
-    if: startsWith(needs.warmup.outputs.tag, 'main-')
+    # The status functions are load-bearing, not belt-and-braces. A bare `startsWith(...)` here has
+    # no status-check function in it, so Actions inserts an implicit `success()` over the whole
+    # needs graph — and that graph reaches the xcframework, which is *skipped* for main and v0.
+    # Skip propagates, and this job silently never ran. Naming the statuses is what stops that,
+    # exactly as in `release` above.
+    if: >-
+      !cancelled()
+      && needs.release.result == 'success'
+      && startsWith(needs.warmup.outputs.tag, 'main-')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

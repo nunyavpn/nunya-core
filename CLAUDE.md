@@ -358,9 +358,16 @@ Three properties protect the client's `core.lock`, and each is load-bearing:
   only the xcframework is conditional. A silently short list would reach the client as a 404
   mid-fetch, after `fetch-core.sh` had already verified `SHA256SUMS`.
 
-`release` spells out its `if:` (`needs.xcframework.result == 'success' || == 'skipped'`) rather than
-using `always()`, because the xcframework is skipped for main and v0 and a skipped dependency would
-otherwise skip the publish — while `always()` would publish straight through a genuine failure.
+**The `if:` conditions on `release` and `prune` are load-bearing, and the trap caught this repo
+once.** A job whose `if:` contains no status-check function gets an implicit `success()` applied
+over its whole `needs` graph — and that graph reaches `xcframework`, which is *skipped* for main and
+v0. Skip propagates down the chain, so `prune` was silently never running despite its condition
+being true. Both jobs therefore name the statuses explicitly (`!cancelled() && needs.X.result ==
+'success' && ...`) rather than relying on the implicit check. `always()` is not the fix either: it
+would publish straight through a genuine build failure.
+
+If you add a job downstream of anything conditional, spell out its statuses, and confirm on the next
+run that it actually ran — a wrongly skipped job reports no error anywhere.
 
 `../nunya/core.lock` still holds the placeholder `v0.0.0-unreleased`. Once a `v0` beta is cut, a
 client pins it with `./scripts/fetch-core.sh --update v0.1.0` instead of building from `--source`.
