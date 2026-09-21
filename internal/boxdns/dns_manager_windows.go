@@ -1,9 +1,9 @@
 package boxdns
 
 import (
-	"github.com/nunyavpn/nunya-core/internal/winipcfg"
 	"encoding/binary"
 	"github.com/gofrs/uuid/v5"
+	"github.com/nunyavpn/nunya-core/internal/winipcfg"
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/windnsapi"

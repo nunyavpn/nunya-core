@@ -44,17 +44,32 @@ response  [u32 id][u8  status    ][u32 payload_len][payload]
 ## Building
 
 ```bash
-brew install go protobuf                                             # macOS
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+sudo pacman -S go protobuf      # Arch/Manjaro. Debian: apt install golang protobuf-compiler
+brew install go protobuf        # macOS
+
+# Pinned, matching .github/actions/go-toolchain: these generate the wire contract, so a floating
+# @latest would let two builds of the same commit emit different code.
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
 export PATH="$PATH:$(go env GOPATH)/bin"
 
 ./scripts/build.sh              # -> build/dev/<goos>-<goarch>/nunya-core
 RELEASE=1 ./scripts/build.sh    # -> build/release/<goos>-<goarch>/nunya-core
-./scripts/build-apple.sh        # -> build/apple/NunyaCore.xcframework  (needs full Xcode)
+./scripts/build-apple.sh        # -> build/apple/NunyaCore.xcframework  (macOS + full Xcode)
 ```
 
-`gen/*.pb.go` is generated and gitignored; every build script regenerates it.
+`gen/*.pb.go` is generated and gitignored; every build script regenerates it. The build tag set
+lives in [`scripts/tags.sh`](scripts/tags.sh) so the build, `go vet` and `go test` cannot drift
+apart — they are not optional, and a core built without them runs fine while reporting zero traffic
+forever.
+
+Checks, as CI runs them:
+
+```bash
+gofmt -l . | grep -v '^gen/'                      # must print nothing
+go vet  -tags "$(./scripts/tags.sh --dev)" ./...
+go test -tags "$(./scripts/tags.sh --dev)" ./...
+```
 
 ### Dev and release builds are not interchangeable
 
@@ -73,17 +88,33 @@ is blocked, `GOPROXY=direct ./scripts/build.sh` fetches from the source reposito
 
 ## Releasing
 
-[`.github/workflows/release.yml`](.github/workflows/release.yml) publishes two kinds of release, and
-builds every platform natively (CGO is on, so there is no cross-compilation):
-
-| Trigger | Tag | Assets |
-| --- | --- | --- |
-| push a `v*` tag | that tag | binaries, xcframework, proto, `SHA256SUMS` |
-| merge or push to `main` | `main-<date>-<sha>`, marked prerelease | the same, minus the xcframework |
+[`.github/workflows/release.yml`](.github/workflows/release.yml) is one staged pipeline:
 
 ```text
-nunya-core-<goos>-<goarch>[.exe]   one per platform
-NunyaCore.xcframework.zip          the Apple library — tagged releases only
+warmup ──> lint ──> test ──> build ────────────┬──> release ──> prune
+                              └> xcframework ──┘
+```
+
+Staged rather than fanned out on purpose: lint and test cost one runner between them, so a bad
+commit spends one runner instead of the four a build matrix would have started.
+
+| Trigger | Tag | Marked | Assets |
+| --- | --- | --- | --- |
+| merge or push to `main` | `main-<date>-<sha>` | prerelease | binaries |
+| push a `v0.x.y` tag | that tag | prerelease (beta) | binaries |
+| push a `v1.x.y` tag | that tag | release | binaries + xcframework |
+
+**`v0` is the beta line and ships binaries only.** The xcframework is only useful inside a *signed*
+packet tunnel extension, and there is no Apple Developer membership to sign one with yet — so the
+Apple artefact arrives with `v1`, alongside the account. The split is about signing, not about how
+finished the code is.
+
+```text
+nunya-core-darwin-arm64            Apple Silicon; there is no Intel Mac build
+nunya-core-linux-amd64
+nunya-core-linux-arm64
+nunya-core-windows-amd64.exe
+NunyaCore.xcframework.zip          the Apple library — v1+ only
 nunya.proto                        the contract
 SHA256SUMS                         checksums over all of the above
 ```
@@ -92,26 +123,26 @@ The client's `scripts/fetch-core.sh` reads a pinned tag, downloads these, and ve
 `SHA256SUMS` before unpacking anything. Pin any build, `main-*` included:
 
 ```bash
-./scripts/fetch-core.sh --update main-20260921-9966e63    # in the client repo
+./scripts/fetch-core.sh --update v0.1.0     # in the client repo
 ```
 
 **Every published tag is immutable.** `core.lock` pins a tag *plus* the digest of that release's
 `SHA256SUMS`, so a tag re-cut with different assets is reported as possible tampering — that check is
 the reason the lockfile is worth having. Main builds therefore derive their tag from the commit sha
-and never reuse one, and the workflow refuses to overwrite an existing release rather than quietly
+and never reuse one, and the pipeline refuses to overwrite an existing release rather than quietly
 replacing its assets. To republish a commit, delete the release and its tag deliberately:
 
 ```bash
-gh release delete main-20260921-9966e63 --yes --cleanup-tag
+gh release delete v0.1.0 --yes --cleanup-tag
 ```
 
 Old `main-*` prereleases are pruned to the newest ten after each successful publish. Pruning deletes
 a build whole, so a tag that still exists still means exactly what it meant when it was cut; `v*`
-releases are never touched.
+releases, betas included, are never touched.
 
-Everything published is a **release build**, `main-*` prereleases included — the parent check is
-what stops anything else on the machine from driving a root-privileged tunnel. A `noparentcheck`
-core is never published; development cores come from `fetch-core.sh --source`.
+Everything published is a **release build**, betas and `main-*` prereleases included — the parent
+check is what stops anything else on the machine from driving a root-privileged tunnel. A
+`noparentcheck` core is never published; development cores come from `fetch-core.sh --source`.
 
 ## Scope
 

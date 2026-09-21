@@ -1,26 +1,37 @@
-# Publishes the artefacts the client repository consumes.
+# The pipeline. One staged flow, used for every push:
 #
-# The client does not build this repository. It pins a tag, downloads the assets below, and checks
-# them against SHA256SUMS — so the RPC contract between the two is a published, versioned interface
-# rather than a relative path into a sibling checkout.
+#   warmup ──> lint ──> test ──> build ────────┬──> release ──> prune
+#                                └> xcframework┘
+#
+# Strictly staged rather than fanned out, and that is a choice: lint and test cost one ubuntu runner
+# between them, so failing there spends one runner instead of the five a matrix would have started.
+# Only the xcframework runs beside the matrix, because it is the slowest job here and nothing in the
+# matrix depends on it.
+#
+# Three kinds of release, decided once by `warmup`:
+#
+#   push to main   main-<date>-<sha>   prerelease, binaries only
+#   v0.x.y tag     beta                prerelease, binaries only
+#   v1.x.y tag     release             binaries + the Apple xcframework
+#
+# The v0/v1 split is about the Apple Developer account, not about code maturity: the xcframework is
+# only useful inside a signed packet tunnel extension, and there is no membership to sign one with
+# yet. v0 is the desktop-subprocess beta line; v1 is when the Apple half goes in.
 #
 # Assets per release:
 #   nunya-core-<goos>-<goarch>[.exe]   standalone core, one per platform
-#   NunyaCore.xcframework.zip          gomobile library for the Apple packet tunnel extension
+#   NunyaCore.xcframework.zip          gomobile library for the packet tunnel extension (v1+)
 #   nunya.proto                        the contract both sides generate from
 #   SHA256SUMS                         checksums over everything above
 #
-# Two kinds of release, and the difference is deliberate:
+# The client does not build this repository. It pins a tag, downloads those assets and checks them
+# against SHA256SUMS — so the RPC contract between the two is a published, versioned interface
+# rather than a relative path into a sibling checkout.
 #
-#   v* tag       a real release. Full artefact set, including the xcframework.
-#   push to main a prerelease tagged main-<date>-<sha>, binaries only.
-#
-# Every published tag is IMMUTABLE. The client's core.lock pins a tag plus the digest of that
-# release's SHA256SUMS, and fetch-core.sh reports a re-cut tag as possible tampering — which is the
-# whole point of the check. So main builds derive their tag from the commit sha and never reuse one,
-# and this workflow refuses to overwrite a release that already exists rather than quietly re-cutting
-# it. Old main-* prereleases are pruned by age at the end, which deletes builds nobody pinned while
-# leaving every tag that still exists honest.
+# Every published tag is IMMUTABLE. core.lock pins a tag plus the digest of that release's
+# SHA256SUMS, and fetch-core.sh reports a re-cut tag as possible tampering — which is the whole point
+# of the check. So main builds derive their tag from the commit sha and never reuse one, and
+# `release` refuses to overwrite an existing release rather than quietly re-cutting it.
 
 name: release
 
@@ -31,7 +42,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to build and publish"
+        description: "Tag to build and publish (e.g. v0.1.0)"
         required: true
 
 permissions:
@@ -44,68 +55,131 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Runs beside the build matrix rather than in front of it, so a green run is not serialised behind
-  # it; `publish` needs both, so nothing reaches a release without it having passed.
-  check:
+  # Stage 1. Decides what this run is, and primes the module cache every later ubuntu job restores.
+  # Both belong here: this is the stage that answers "what are we building, and with what", and
+  # neither half is worth a runner of its own.
+  warmup:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.decide.outputs.tag }}
+      prerelease: ${{ steps.decide.outputs.prerelease }}
+      apple: ${{ steps.decide.outputs.apple }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # One place decides. Three jobs need the answer and they must not disagree — a release marked
+      # stable that skipped the xcframework, or a v0 tag that spent twenty minutes on a macOS
+      # runner, are both the kind of bug a duplicated `if:` produces.
+      - name: Decide the release identity
+        id: decide
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            tag="${{ github.ref_name }}"
+          else
+            # Unique per commit, so a pinned client stays valid forever. Date first only so the
+            # releases page sorts readably.
+            tag="main-$(date -u +%Y%m%d)-$(git rev-parse --short=7 HEAD)"
+          fi
+
+          case "$tag" in
+            main-*)
+              prerelease=true;  apple=false ;;
+            v0.*)
+              # Beta line: no Apple Developer account yet, so no xcframework to sign it into.
+              prerelease=true;  apple=false ;;
+            v[1-9]*-*)
+              # v1.0.0-rc1 and friends: the full artefact set, but not badged as the latest release.
+              prerelease=true;  apple=true ;;
+            v[1-9]*)
+              prerelease=false; apple=true ;;
+            *)
+              echo "error: tag '$tag' is neither main-* nor v<major>.<minor>.<patch>" >&2
+              exit 1 ;;
+          esac
+
+          {
+            echo "tag=$tag"
+            echo "prerelease=$prerelease"
+            echo "apple=$apple"
+          } >> "$GITHUB_OUTPUT"
+          echo "==> $tag (prerelease=$prerelease, xcframework=$apple)"
+
+      - uses: ./.github/actions/go-toolchain
+
+      # Populates the setup-go cache the later ubuntu stages restore, so lint, test and the two Linux
+      # build legs do not each resolve the sing-box + Xray + gVisor graph from scratch. The macOS and
+      # Windows legs have their own cache keys and warm themselves.
+      - name: Prime the module cache
+        run: go mod download
+
+  # Stage 2. Cheapest signal first: formatting and vet, before anything spends a matrix on it.
+  lint:
+    needs: warmup
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Install protoc and plugins
-        shell: bash
-        run: |
-          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      - uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ./.github/actions/go-toolchain
 
-      # gen/*.pb.go is generated and gitignored, so vet and test cannot resolve the gen package
-      # without this.
+      # Excludes gen/, which is generated and formatted by protoc-gen-go, not by us.
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l . | grep -v '^gen/' || true)"
+          if [[ -n "$unformatted" ]]; then
+            echo "error: these files are not gofmt-clean:" >&2
+            echo "$unformatted" >&2
+            echo >&2
+            echo "  fix with: gofmt -w $unformatted" >&2
+            exit 1
+          fi
+          echo "==> gofmt clean"
+
+      # gen/*.pb.go is generated and gitignored, so vet cannot resolve the gen package without this.
       - name: Generate the bindings
         run: ./scripts/gen-proto.sh
 
+      # The same tag set scripts/build.sh uses, from scripts/tags.sh — vetting a different set
+      # type-checks a different program from the one that ships.
       - name: Vet
         run: go vet -tags "$(./scripts/tags.sh --dev)" ./...
+
+  # Stage 3.
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/go-toolchain
+      - name: Generate the bindings
+        run: ./scripts/gen-proto.sh
       - name: Test
         run: go test -tags "$(./scripts/tags.sh --dev)" ./...
 
+  # Stage 4. Apple Silicon only on darwin: Nunya does not support Intel Macs. The runner situation
+  # agrees — GitHub retired macos-13 (the Intel image) in December 2025, and macos-15-intel is the
+  # last Intel image, itself going away in Fall 2027. There is no cross-compilation to fall back on
+  # either, because CGO is on.
   build:
+    needs: test
     strategy:
       fail-fast: false
       matrix:
         include:
           - { goos: darwin,  goarch: arm64, runner: macos-14 }
-          - { goos: darwin,  goarch: amd64, runner: macos-13 }
           - { goos: linux,   goarch: amd64, runner: ubuntu-latest }
           - { goos: linux,   goarch: arm64, runner: ubuntu-24.04-arm }
           - { goos: windows, goarch: amd64, runner: windows-latest }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: ./.github/actions/go-toolchain
 
-      - name: Install protoc and plugins
-        shell: bash
-        run: |
-          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      - uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      # RELEASE=1 on every published build, main prereleases included: the parent check is what stops
-      # anything else on the machine from driving a root-privileged tunnel, and a downloadable core
-      # with it off is a liability no convenience pays for. Development cores come from
-      # `fetch-core.sh --source`, never from here.
+      # RELEASE=1 on every published build, betas and main prereleases included: the parent check is
+      # what stops anything else on the machine from driving a root-privileged tunnel, and a
+      # downloadable core with it off is a liability no convenience pays for. Development cores come
+      # from `fetch-core.sh --source`, never from here.
       #
       # CGO is on: the core resolves DNS through cgo on Darwin and needs libresolv, and the Windows
       # DNS manager binds winipcfg. Each runner is native for its target, so no cross toolchain.
@@ -131,26 +205,16 @@ jobs:
           path: dist/nunya-core-*
           if-no-files-found: error
 
-  # Tagged releases only. It needs a macOS runner driving gomobile under full Xcode, which is by far
-  # the slowest job here, and it is unusable until the packet tunnel extension can be signed — so a
-  # merge does not pay for one.
+  # Beside the matrix, not after it: this is the slowest job here and nothing in the matrix needs it.
+  # v1+ only — it needs a macOS runner driving gomobile under full Xcode, and the library it produces
+  # is unusable until there is an Apple Developer membership to sign the extension with.
   xcframework:
-    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    needs: [warmup, test]
+    if: needs.warmup.outputs.apple == 'true'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Install protoc and plugins
-        run: |
-          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      - uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ./.github/actions/go-toolchain
 
       - run: ./scripts/build-apple.sh
       # Zipped rather than uploaded raw: an .xcframework is a directory, and release assets are files.
@@ -165,34 +229,20 @@ jobs:
           path: dist/NunyaCore.xcframework.zip
           if-no-files-found: error
 
-  publish:
-    needs: [check, build, xcframework]
-    # `xcframework` is skipped on main, and a skipped dependency would otherwise skip this job too.
-    # Spelled out rather than `always()`, so a genuine failure anywhere still stops the release.
+  # Stage 5.
+  release:
+    needs: [warmup, build, xcframework]
+    # `xcframework` is skipped for main and v0, and a skipped dependency would otherwise skip this
+    # job too. Spelled out rather than `always()`, so a genuine failure anywhere still stops the
+    # release. lint and test are not listed: `build` already needs them transitively.
     if: >-
       !cancelled()
-      && needs.check.result == 'success'
+      && needs.warmup.result == 'success'
       && needs.build.result == 'success'
       && (needs.xcframework.result == 'success' || needs.xcframework.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # A main build's tag carries the sha, so it is unique per commit and a pinned client stays
-      # valid forever. The date is first only so the releases page sorts readably.
-      - name: Decide the tag
-        id: meta
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            tag="${{ inputs.tag }}"; prerelease=false
-          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
-            tag="${{ github.ref_name }}"; prerelease=false
-          else
-            tag="main-$(date -u +%Y%m%d)-$(git rev-parse --short=7 HEAD)"; prerelease=true
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
-          echo "==> publishing as $tag (prerelease=$prerelease)"
 
       # A re-run on an already-published commit would otherwise replace that release's assets, which
       # is indistinguishable from tampering to every client that pinned it.
@@ -200,7 +250,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="${{ steps.meta.outputs.tag }}"
+          tag="${{ needs.warmup.outputs.tag }}"
           if gh release view "$tag" >/dev/null 2>&1; then
             cat >&2 <<MSG
           error: a release already exists for $tag
@@ -229,11 +279,33 @@ jobs:
           ( cd dist && sha256sum * > SHA256SUMS )
           cat dist/SHA256SUMS
 
+      # The four binaries and the proto are the floor for every release; only the xcframework is
+      # conditional. A silently short asset list would reach the client as a 404 mid-fetch.
+      - name: Check the asset list is complete
+        run: |
+          expected=(
+            nunya-core-darwin-arm64
+            nunya-core-linux-amd64
+            nunya-core-linux-arm64
+            nunya-core-windows-amd64.exe
+            nunya.proto
+          )
+          [[ "${{ needs.warmup.outputs.apple }}" == "true" ]] && expected+=(NunyaCore.xcframework.zip)
+          missing=()
+          for asset in "${expected[@]}"; do
+            [[ -f "dist/$asset" ]] || missing+=("$asset")
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "error: release is missing ${missing[*]}" >&2
+            exit 1
+          fi
+          echo "==> all ${#expected[@]} expected assets present"
+
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
+          tag_name: ${{ needs.warmup.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          prerelease: ${{ steps.meta.outputs.prerelease }}
+          prerelease: ${{ needs.warmup.outputs.prerelease }}
           files: dist/*
           fail_on_unmatched_files: true
           generate_release_notes: true
@@ -242,11 +314,16 @@ jobs:
       - name: Summarise
         run: |
           {
-            echo "### nunya-core \`${{ steps.meta.outputs.tag }}\`"
+            echo "### nunya-core \`${{ needs.warmup.outputs.tag }}\`"
             echo
+            if [[ "${{ needs.warmup.outputs.apple }}" != "true" ]]; then
+              echo "> Binaries only — no \`NunyaCore.xcframework.zip\`. The Apple library lands in v1,"
+              echo "> with the Developer membership needed to sign the packet tunnel extension."
+              echo
+            fi
             echo "Pin it from the client:"
             echo '```bash'
-            echo "./scripts/fetch-core.sh --update ${{ steps.meta.outputs.tag }}"
+            echo "./scripts/fetch-core.sh --update ${{ needs.warmup.outputs.tag }}"
             echo '```'
             echo
             echo '```'
@@ -254,12 +331,12 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # Keeps the releases page usable without ever rewriting a tag: old main-* builds are deleted
-  # whole, so a tag that still exists still means exactly what it meant when it was cut. Tagged
-  # releases are never touched.
+  # Keeps the releases page usable without ever rewriting a tag: old main-* builds are deleted whole,
+  # so a tag that still exists still means exactly what it meant when it was cut. Tagged releases,
+  # v0 betas included, are never touched.
   prune:
-    needs: publish
-    if: github.event_name == 'push' && github.ref_type == 'branch'
+    needs: [warmup, release]
+    if: startsWith(needs.warmup.outputs.tag, 'main-')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -18,8 +18,12 @@ DEST="${DEST:-build/apple}"
 # Matches scripts/build.sh: the protocols this client ships, and nothing else.
 TAGS="with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0"
 
+# Apple Silicon only: Nunya does not support Intel Macs. The arch matters — a bare `macos` makes
+# gomobile build amd64 as well and fold both into a universal framework, which is twice the build
+# for a slice nothing will load.
+#
 # macOS only for now. Add ios,iossimulator here when there is an iOS target to build for.
-TARGET="${TARGET:-macos}"
+TARGET="${TARGET:-macos/arm64}"
 
 # xcode-select often still points at the Command Line Tools even with Xcode installed, and switching
 # it needs sudo. DEVELOPER_DIR overrides it for this process only, no privilege required.

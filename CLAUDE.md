@@ -41,8 +41,10 @@ Development moved from macOS to Linux. Everything except the Apple artefact buil
 ```bash
 # Manjaro/Arch. Debian: apt install golang protobuf-compiler
 sudo pacman -S go protobuf
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+# Pinned to match .github/actions/go-toolchain — these generate the wire contract, so a floating
+# @latest lets two builds of the same commit emit different code.
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
 export PATH="$PATH:$(go env GOPATH)/bin"     # protoc cannot find the plugins otherwise
 
 ./scripts/build.sh                            # -> build/dev/linux-amd64/nunya-core
@@ -296,41 +298,77 @@ URL/IP/speed/country probes, auto-selector status and pinning, WARP registration
 masque) and WG keypair generation, rule-set updates, the diagnostics capture, the Linux capability
 probe, the Windows DNS manager, and the gomobile surface under `mobile/`.
 
-### Releasing
+### The CI pipeline
 
-`.github/workflows/release.yml` builds every platform **natively** (CGO is on — darwin resolves DNS
-through libresolv, Windows binds winipcfg — so there is no cross-compilation) and publishes two
-kinds of release:
+`.github/workflows/release.yml` and `ci.yml` share one staged flow; `ci.yml` is the same thing with
+the publishing half cut off, and runs on **pull requests only** (a main push is already covered by
+`release.yml`, and running both would build the same commit twice).
 
-| Trigger | Tag | Prerelease | xcframework |
+```text
+warmup ──> lint ──> test ──> build ────────────┬──> release ──> prune
+                              └> xcframework ──┘
+```
+
+Staged rather than fanned out deliberately: lint and test cost one ubuntu runner between them, so a
+bad commit spends one runner instead of the four a matrix would have started. Only the xcframework
+runs beside `build`, because it is the slowest job and nothing in the matrix needs it.
+
+- **warmup** decides the release identity *once* (`tag`, `prerelease`, `apple` outputs) and primes
+  the module cache the later ubuntu stages restore. Three jobs consume that identity; a duplicated
+  `if:` is how you get a release marked stable that skipped the xcframework.
+- **lint** is `gofmt -l` (excluding generated `gen/`) plus `go vet`. The tree is gofmt-clean and the
+  gate keeps it that way.
+- `.github/actions/go-toolchain` is a composite action every stage uses, with the protoc plugin
+  versions **pinned**. They generate the wire contract, so `@latest` would mean two builds of one
+  commit can emit different code.
+
+| Trigger | Tag | Marked | xcframework |
 | --- | --- | --- | --- |
-| push a `v*` tag | that tag | no | yes |
-| merge or push to `main` | `main-<date>-<sha>` | yes | no |
+| merge or push to `main` | `main-<date>-<sha>` | prerelease | no |
+| push a `v0.x.y` tag | that tag | prerelease (beta) | no |
+| push a `v1.x.y` tag | that tag | release | yes |
 
-`ci.yml` is **pull requests only** — a main push is already vetted, tested and built by
-`release.yml`, and running both would build the same commit twice.
+**`v0` is the beta line and ships binaries only.** The gate is the Apple Developer account, not code
+maturity: an xcframework is only useful inside a *signed* packet tunnel extension, and there is no
+membership to sign one with yet. The Apple artefact arrives with `v1`. A `v1.x.y-rc1` gets the full
+asset set but stays marked prerelease.
 
-Three properties hold the design together, and each exists to protect the client's `core.lock`:
+**Four binaries: `darwin/arm64`, `linux/amd64`, `linux/arm64`, `windows/amd64`.** Nunya does not
+support Intel Macs, so there is no `darwin/amd64`, and `build-apple.sh` pins `TARGET=macos/arm64` —
+a bare `macos` makes gomobile build amd64 too and fold both into a universal framework. The
+ecosystem agrees: GitHub retired the `macos-13` Intel runner in December 2025, and `macos-15-intel`
+is the last Intel image, going away Fall 2027. Do not add an Intel leg back; with CGO on there is no
+cross-compilation to fall back on either.
+
+Everything published is built `RELEASE=1`, betas included. A downloadable core with its parent check
+off is a root-capable binary anything local could drive; development cores come from
+`fetch-core.sh --source` and are never uploaded.
+
+Three properties protect the client's `core.lock`, and each is load-bearing:
 
 - **Published tags are immutable.** The lock pins a tag plus the digest of that release's
-  `SHA256SUMS`; a re-cut tag is reported to the user as possible tampering. So main tags carry the
-  commit sha and are never reused, and `publish` **fails** on an existing release rather than
-  replacing its assets. Republishing a commit means deleting the release and tag on purpose
+  `SHA256SUMS`; a re-cut tag is reported to the user as possible tampering. Main tags carry the
+  commit sha and are never reused, and `release` **fails** on an existing release rather than
+  replacing its assets. Republishing means deleting the release and tag on purpose
   (`gh release delete <tag> --yes --cleanup-tag`).
 - **Pruning deletes builds, never rewrites them.** The newest ten `main-*` prereleases survive; the
-  rest are deleted whole, so a tag that still exists still means what it meant when it was cut. The
-  filter keys on the `main-` prefix, not on the prerelease flag, so a `v0.2.0-rc1` is safe.
-- **Everything published is `RELEASE=1`**, prereleases included. A downloadable core with its parent
-  check off is a root-capable binary anything local could drive. Development cores come from
-  `fetch-core.sh --source` and are never uploaded.
+  rest go whole, so a tag that still exists still means what it meant when cut. The filter keys on
+  the `main-` prefix, not the prerelease flag, so `v0` betas and `v1.0.0-rc1` are safe.
+- **The asset list is asserted before publishing.** The four binaries and the proto are the floor;
+  only the xcframework is conditional. A silently short list would reach the client as a 404
+  mid-fetch, after `fetch-core.sh` had already verified `SHA256SUMS`.
 
-`publish` spells out its `if:` (`needs.xcframework.result == 'success' || == 'skipped'`) rather than
-using `always()`, because `xcframework` is skipped on main and a skipped dependency would otherwise
-skip the publish too — while `always()` would publish through a genuine failure.
+`release` spells out its `if:` (`needs.xcframework.result == 'success' || == 'skipped'`) rather than
+using `always()`, because the xcframework is skipped for main and v0 and a skipped dependency would
+otherwise skip the publish — while `always()` would publish straight through a genuine failure.
 
-`../nunya/core.lock` currently still holds the placeholder `v0.0.0-unreleased`. Once the first main
-build lands, a client can pin it with `./scripts/fetch-core.sh --update main-<date>-<sha>` instead
-of building from `--source`.
+`../nunya/core.lock` still holds the placeholder `v0.0.0-unreleased`. Once a `v0` beta is cut, a
+client pins it with `./scripts/fetch-core.sh --update v0.1.0` instead of building from `--source`.
+
+**Known gap:** `fetch-core.sh` appends `NunyaCore.xcframework.zip` to its asset list on any macOS
+host, unconditionally. A `v0` release has no such asset, so fetching a beta *on a Mac* fails on a
+bare curl 404. Fetching on Linux and Windows is unaffected. Fix that in the client before anyone
+pins a beta from a Mac.
 
 Deliberately narrower than Throne: the build tags cover only the protocols the client ships, which
 drops cronet (~500 MB of download for NaiveProxy alone) along with everything behind the OpenVPN,

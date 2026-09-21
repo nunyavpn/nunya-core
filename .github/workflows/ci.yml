@@ -1,5 +1,12 @@
-# Pull requests only. A push to main is covered by release.yml, which vets, tests and builds every
-# platform before it publishes — running this as well would build the same commit twice.
+# Pull requests only, and the same staged flow release.yml uses, minus the publishing half:
+#
+#   warmup ──> lint ──> test ──> build
+#
+# A push to main is covered by release.yml, which runs all of this before it publishes — running
+# both would build the same commit twice.
+#
+# The stages are deliberately serial: lint and test cost one ubuntu runner between them, so a PR
+# that fails either spends one runner instead of the three a build matrix would have started.
 
 name: ci
 
@@ -11,7 +18,59 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Primes the module cache the later ubuntu stages restore, so lint, test and the Linux build leg
+  # do not each resolve the sing-box + Xray + gVisor graph from scratch.
+  warmup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/go-toolchain
+      - run: go mod download
+
+  lint:
+    needs: warmup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/go-toolchain
+
+      # Excludes gen/, which is generated and formatted by protoc-gen-go, not by us.
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l . | grep -v '^gen/' || true)"
+          if [[ -n "$unformatted" ]]; then
+            echo "error: these files are not gofmt-clean:" >&2
+            echo "$unformatted" >&2
+            echo >&2
+            echo "  fix with: gofmt -w $unformatted" >&2
+            exit 1
+          fi
+          echo "==> gofmt clean"
+
+      # gen/*.pb.go is generated and gitignored, so vet cannot resolve the gen package without this.
+      - name: Generate the bindings
+        run: ./scripts/gen-proto.sh
+
+      # The same tag set scripts/build.sh uses, from scripts/tags.sh — vetting a different set
+      # type-checks a different program from the one that ships.
+      - name: Vet
+        run: go vet -tags "$(./scripts/tags.sh --dev)" ./...
+
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/go-toolchain
+      - name: Generate the bindings
+        run: ./scripts/gen-proto.sh
+      - name: Test
+        run: go test -tags "$(./scripts/tags.sh --dev)" ./...
+
+  # Every OS the core ships on, so a PR cannot break a platform the author does not have. A dev
+  # build, unlike release.yml: the parent check is the one thing a PR cannot exercise anyway.
   build:
+    needs: test
     strategy:
       fail-fast: false
       matrix:
@@ -19,31 +78,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Install protoc plugins
-        shell: bash
-        run: |
-          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      - uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      # A dev build, unlike release.yml: this proves the tree compiles, and the parent check is the
-      # one thing a PR cannot exercise anyway.
+      - uses: ./.github/actions/go-toolchain
       - name: Build
         shell: bash
         run: ./scripts/build.sh
-
-      # The same tag set build.sh just used, from scripts/tags.sh — vetting a different set
-      # type-checks a different program from the one that ships.
-      - name: Vet
-        shell: bash
-        run: go vet -tags "$(./scripts/tags.sh --dev)" ./...
-      - name: Test
-        shell: bash
-        run: go test -tags "$(./scripts/tags.sh --dev)" ./...
