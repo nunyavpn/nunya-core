@@ -91,7 +91,7 @@ is blocked, `GOPROXY=direct ./scripts/build.sh` fetches from the source reposito
 [`.github/workflows/release.yml`](.github/workflows/release.yml) is one staged pipeline:
 
 ```text
-warmup ──> lint ──> test ──> build ────────────┬──> release ──> prune
+warmup ──> lint ──> test ──> build ────────────┬──> release
                               └> xcframework ──┘
 ```
 
@@ -100,7 +100,7 @@ commit spends one runner instead of the four a build matrix would have started.
 
 | Trigger | Tag | Marked | Assets |
 | --- | --- | --- | --- |
-| merge or push to `main` | `main-<date>-<sha>` | prerelease | binaries |
+| merge or push to `main` | next `v0.x.y` (`scripts/version.mjs`) | prerelease | binaries |
 | push a `v0.x.y` tag | that tag | prerelease (beta) | binaries |
 | push a `v1.x.y` tag | that tag | release | binaries + xcframework |
 
@@ -120,7 +120,7 @@ SHA256SUMS                         checksums over all of the above
 ```
 
 The client's `scripts/fetch-core.sh` reads a pinned tag, downloads these, and verifies them against
-`SHA256SUMS` before unpacking anything. Pin any build, `main-*` included:
+`SHA256SUMS` before unpacking anything. Pin any build:
 
 ```bash
 ./scripts/fetch-core.sh --update v0.1.0     # in the client repo
@@ -136,11 +136,9 @@ replacing its assets. To republish a commit, delete the release and its tag deli
 gh release delete v0.1.0 --yes --cleanup-tag
 ```
 
-Old `main-*` prereleases are pruned to the newest ten after each successful publish. Pruning deletes
-a build whole, so a tag that still exists still means exactly what it meant when it was cut; `v*`
-releases, betas included, are never touched.
+Versions are never reused and nothing is pruned. The number is worked out from the newest `vX.Y.Z` tag the same way as in nunya and nunya-mobile: a `feat:` merge bumps the middle number, anything else the last; the first number moves only when a person tags `v1.0.0`. The tag is stamped into the binary (`nunya-core: vX.Y.Z` on startup).
 
-Everything published is a **release build**, betas and `main-*` prereleases included — the parent
+Everything published is a **release build**, betas included — the parent
 check is what stops anything else on the machine from driving a root-privileged tunnel. A
 `noparentcheck` core is never published; development cores come from `fetch-core.sh --source`.
 

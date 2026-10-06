@@ -305,7 +305,7 @@ the publishing half cut off, and runs on **pull requests only** (a main push is 
 `release.yml`, and running both would build the same commit twice).
 
 ```text
-warmup ──> lint ──> test ──> build ────────────┬──> release ──> prune
+warmup ──> lint ──> test ──> build ────────────┬──> release
                               └> xcframework ──┘
 ```
 
@@ -324,7 +324,7 @@ runs beside `build`, because it is the slowest job and nothing in the matrix nee
 
 | Trigger | Tag | Marked | xcframework |
 | --- | --- | --- | --- |
-| merge or push to `main` | `main-<date>-<sha>` | prerelease | no |
+| merge or push to `main` | next `v0.x.y` (`scripts/version.mjs`) | prerelease | no |
 | push a `v0.x.y` tag | that tag | prerelease (beta) | no |
 | push a `v1.x.y` tag | that tag | release | yes |
 
@@ -347,22 +347,19 @@ off is a root-capable binary anything local could drive; development cores come 
 Three properties protect the client's `core.lock`, and each is load-bearing:
 
 - **Published tags are immutable.** The lock pins a tag plus the digest of that release's
-  `SHA256SUMS`; a re-cut tag is reported to the user as possible tampering. Main tags carry the
-  commit sha and are never reused, and `release` **fails** on an existing release rather than
+  `SHA256SUMS`; a re-cut tag is reported to the user as possible tampering. Main tags are the next
+  version number and are never reused, and `release` **fails** on an existing release rather than
   replacing its assets. Republishing means deleting the release and tag on purpose
   (`gh release delete <tag> --yes --cleanup-tag`).
-- **Pruning deletes builds, never rewrites them.** The newest ten `main-*` prereleases survive; the
-  rest go whole, so a tag that still exists still means what it meant when cut. The filter keys on
-  the `main-` prefix, not the prerelease flag, so `v0` betas and `v1.0.0-rc1` are safe.
 - **The asset list is asserted before publishing.** The four binaries and the proto are the floor;
   only the xcframework is conditional. A silently short list would reach the client as a 404
   mid-fetch, after `fetch-core.sh` had already verified `SHA256SUMS`.
 
-**The `if:` conditions on `release` and `prune` are load-bearing, and the trap caught this repo
+**The `if:` conditions on `release` is load-bearing, and the trap caught this repo
 once.** A job whose `if:` contains no status-check function gets an implicit `success()` applied
 over its whole `needs` graph — and that graph reaches `xcframework`, which is *skipped* for main and
-v0. Skip propagates down the chain, so `prune` was silently never running despite its condition
-being true. Both jobs therefore name the statuses explicitly (`!cancelled() && needs.X.result ==
+v0. Skip propagates down the chain, so the job was silently never running despite its condition
+being true. `release` therefore names the statuses explicitly (`!cancelled() && needs.X.result ==
 'success' && ...`) rather than relying on the implicit check. `always()` is not the fix either: it
 would publish straight through a genuine build failure.
 

@@ -24,6 +24,9 @@ import (
 	_ "github.com/nunyavpn/nunya-core/internal/distro/all"
 )
 
+// version is the release tag, stamped by scripts/build.sh (-X main.version); "dev" for a local build.
+var version = "dev"
+
 const (
 	// memoryPanicThreshold stays under memoryLimit: that much live under the soft limit means the GC is thrashing.
 	memoryLimit           = 2 * 1024 * 1024 * 1024
@@ -137,6 +140,7 @@ func main() {
 			os.Exit(2)
 		}
 	}()
+	fmt.Println("nunya-core:", version)
 	fmt.Println("sing-box:", C.Version)
 	fmt.Println("Xray-core:", core.Version())
 	fmt.Println()

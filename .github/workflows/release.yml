@@ -1,6 +1,6 @@
 # The pipeline. One staged flow, used for every push:
 #
-#   warmup ──> lint ──> test ──> build ────────┬──> release ──> prune
+#   warmup ──> lint ──> test ──> build ────────┬──> release
 #                                └> xcframework┘
 #
 # Strictly staged rather than fanned out, and that is a choice: lint and test cost one ubuntu runner
@@ -10,7 +10,8 @@
 #
 # Three kinds of release, decided once by `warmup`:
 #
-#   push to main   main-<date>-<sha>   prerelease, binaries only
+#   push to main   next v0.x.y         prerelease, binaries only (scripts/version.mjs, the same
+#                                      bump rule as nunya and nunya-mobile)
 #   v0.x.y tag     beta                prerelease, binaries only
 #   v1.x.y tag     release             binaries + the Apple xcframework
 #
@@ -30,7 +31,7 @@
 #
 # Every published tag is IMMUTABLE. core.lock pins a tag plus the digest of that release's
 # SHA256SUMS, and fetch-core.sh reports a re-cut tag as possible tampering — which is the whole point
-# of the check. So main builds derive their tag from the commit sha and never reuse one, and
+# of the check. So main builds take the next version number and never reuse one, and
 # `release` refuses to overwrite an existing release rather than quietly re-cutting it.
 
 name: release
@@ -48,10 +49,10 @@ on:
 permissions:
   contents: write
 
-# Not cancel-in-progress: each push to main earns its own immutable release, and cancelling would
-# silently skip a commit rather than merely delaying it.
+# Not cancel-in-progress, and one group for every ref: the next version is computed from the newest
+# tag, so two merges close together must queue, the second computed from the first's tag.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -66,6 +67,15 @@ jobs:
       apple: ${{ steps.decide.outputs.apple }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Test the version rule
+        run: node --test scripts/version.test.mjs
 
       # One place decides. Three jobs need the answer and they must not disagree — a release marked
       # stable that skipped the xcframework, or a v0 tag that spent twenty minutes on a macOS
@@ -79,14 +89,13 @@ jobs:
           elif [[ "${{ github.ref_type }}" == "tag" ]]; then
             tag="${{ github.ref_name }}"
           else
-            # Unique per commit, so a pinned client stays valid forever. Date first only so the
-            # releases page sorts readably.
-            tag="main-$(date -u +%Y%m%d)-$(git rev-parse --short=7 HEAD)"
+            # Worked out from the newest tag, never reused, so a pinned client stays valid forever.
+            version="$(node scripts/version.mjs next)"
+            [[ -n "$version" ]] || { echo "error: nothing to release since the last tag" >&2; exit 1; }
+            tag="v$version"
           fi
 
           case "$tag" in
-            main-*)
-              prerelease=true;  apple=false ;;
             v0.*)
               # Beta line: no Apple Developer account yet, so no xcframework to sign it into.
               prerelease=true;  apple=false ;;
@@ -96,7 +105,7 @@ jobs:
             v[1-9]*)
               prerelease=false; apple=true ;;
             *)
-              echo "error: tag '$tag' is neither main-* nor v<major>.<minor>.<patch>" >&2
+              echo "error: tag '$tag' is not v<major>.<minor>.<patch>" >&2
               exit 1 ;;
           esac
 
@@ -162,7 +171,7 @@ jobs:
   # last Intel image, itself going away in Fall 2027. There is no cross-compilation to fall back on
   # either, because CGO is on.
   build:
-    needs: test
+    needs: [warmup, test]
     strategy:
       fail-fast: false
       matrix:
@@ -190,6 +199,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           DEST: dist
+          VERSION_CORE: ${{ needs.warmup.outputs.tag }}
         run: ./scripts/build.sh
 
       - name: Name the artefact for its platform
@@ -330,39 +340,3 @@ jobs:
             cat dist/SHA256SUMS
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-
-  # Keeps the releases page usable without ever rewriting a tag: old main-* builds are deleted whole,
-  # so a tag that still exists still means exactly what it meant when it was cut. Tagged releases,
-  # v0 betas included, are never touched.
-  prune:
-    needs: [warmup, release]
-    # The status functions are load-bearing, not belt-and-braces. A bare `startsWith(...)` here has
-    # no status-check function in it, so Actions inserts an implicit `success()` over the whole
-    # needs graph — and that graph reaches the xcframework, which is *skipped* for main and v0.
-    # Skip propagates, and this job silently never ran. Naming the statuses is what stops that,
-    # exactly as in `release` above.
-    if: >-
-      !cancelled()
-      && needs.release.result == 'success'
-      && startsWith(needs.warmup.outputs.tag, 'main-')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Delete all but the newest 10 main prereleases
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          keep=10
-          mapfile -t stale < <(
-            gh release list --limit 200 --json tagName,isPrerelease,createdAt \
-              --jq "[.[] | select(.isPrerelease and (.tagName | startswith(\"main-\")))]
-                    | sort_by(.createdAt) | reverse | .[${keep}:] | .[].tagName"
-          )
-          if [[ ${#stale[@]} -eq 0 ]]; then
-            echo "==> nothing to prune"
-            exit 0
-          fi
-          for tag in "${stale[@]}"; do
-            echo "==> pruning $tag"
-            gh release delete "$tag" --yes --cleanup-tag
-          done
