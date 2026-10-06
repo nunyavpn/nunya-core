@@ -102,14 +102,67 @@ func TestStrategyFor(t *testing.T) {
 		option dnsfeature.IPOption
 		want   C.DomainStrategy
 	}{
-		{"both defers to the box default", dnsfeature.IPOption{IPv4Enable: true, IPv6Enable: true}, C.DomainStrategyAsIS},
+		{"both takes the default resolver's strategy", dnsfeature.IPOption{IPv4Enable: true, IPv6Enable: true}, C.DomainStrategyPreferIPv4},
 		{"v4 only", dnsfeature.IPOption{IPv4Enable: true}, C.DomainStrategyIPv4Only},
 		{"v6 only", dnsfeature.IPOption{IPv6Enable: true}, C.DomainStrategyIPv6Only},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := strategyFor(tc.option); got != tc.want {
+			if got := strategyFor(tc.option, C.DomainStrategyPreferIPv4); got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// What the client sends: apps are told IPv4 only (a TUN without IPv6), while the server's own
+// address is asked for both families through route.default_domain_resolver.
+const v6OnlyServerConfig = `{
+  "log": {"disabled": true},
+  "dns": {
+    "servers": [
+      {"type": "hosts", "tag": "dns-direct", "predefined": {"v6only.invalid": ["2001:db8::1"]}}
+    ],
+    "final": "dns-direct",
+    "strategy": "ipv4_only"
+  },
+  "route": {"default_domain_resolver": {"server": "dns-direct", "strategy": "prefer_ipv4"}},
+  "outbounds": [{"type": "direct", "tag": "direct"}]
+}`
+
+// The same without a strategy of the resolver's own: the DNS block's ipv4_only applies, as before.
+const v6OnlyNoResolverStrategyConfig = `{
+  "log": {"disabled": true},
+  "dns": {
+    "servers": [
+      {"type": "hosts", "tag": "dns-direct", "predefined": {"v6only.invalid": ["2001:db8::1"]}}
+    ],
+    "final": "dns-direct",
+    "strategy": "ipv4_only"
+  },
+  "route": {"default_domain_resolver": "dns-direct"},
+  "outbounds": [{"type": "direct", "tag": "direct"}]
+}`
+
+func lookupBoth(box *boxbox.Box, domain string) ([]string, error) {
+	resolver := New(func() context.Context { return box.Context() })
+	ips, _, err := resolver.LookupIP(domain, dnsfeature.IPOption{IPv4Enable: true, IPv6Enable: true})
+	out := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		out = append(out, ip.String())
+	}
+	return out, err
+}
+
+func TestAnIPv6OnlyServerResolvesUnderTheDefaultResolversStrategy(t *testing.T) {
+	got, err := lookupBoth(startBox(t, v6OnlyServerConfig), "v6only.invalid")
+	if err != nil || len(got) != 1 || got[0] != "2001:db8::1" {
+		t.Fatalf("expected 2001:db8::1 under prefer_ipv4, got %v (%v)", got, err)
+	}
+}
+
+func TestWithoutAResolverStrategyTheDNSBlocksStillApplies(t *testing.T) {
+	got, err := lookupBoth(startBox(t, v6OnlyNoResolverStrategyConfig), "v6only.invalid")
+	if err == nil && len(got) > 0 {
+		t.Fatalf("expected no answer under the DNS block's ipv4_only, got %v", got)
 	}
 }

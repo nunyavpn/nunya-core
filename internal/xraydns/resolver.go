@@ -57,7 +57,7 @@ func (r *resolver) LookupIP(domain string, option dnsfeature.IPOption) ([]net.IP
 	}
 	addresses, err := router.Lookup(ctx, domain, adapter.DNSQueryOptions{
 		Transport: r.directTransport(ctx),
-		Strategy:  strategyFor(option),
+		Strategy:  strategyFor(option, resolverStrategy(ctx)),
 		Timeout:   lookupTimeout,
 	})
 	if err != nil {
@@ -94,11 +94,23 @@ func (r *resolver) directTransport(ctx context.Context) adapter.DNSTransport {
 	return transport
 }
 
-func strategyFor(option dnsfeature.IPOption) C.DomainStrategy {
+// The strategy route.default_domain_resolver names: what the client wants a server's own address
+// resolved with. AsIS when it names none.
+func resolverStrategy(ctx context.Context) C.DomainStrategy {
+	manager := service.FromContext[adapter.NetworkManager](ctx)
+	if manager == nil {
+		return C.DomainStrategyAsIS
+	}
+	return manager.DefaultOptions().DomainResolveOptions.Strategy
+}
+
+func strategyFor(option dnsfeature.IPOption, resolver C.DomainStrategy) C.DomainStrategy {
 	switch {
 	case option.IPv4Enable && option.IPv6Enable:
-		// Defers to route.default_domain_resolver.strategy.
-		return C.DomainStrategyAsIS
+		// Asked for here, not left as AsIS: the DNS router turns AsIS into the dns block's own
+		// strategy, which describes what apps are told (ipv4_only for a TUN without IPv6), and that
+		// made an IPv6-only server unreachable. A sing-box outbound resolves its server the same way.
+		return resolver
 	case option.IPv4Enable:
 		return C.DomainStrategyIPv4Only
 	default:
