@@ -55,7 +55,7 @@ go build \
   -o "$DEST/$OUT_NAME" \
   -trimpath \
   -tags "$TAGS" \
-  -ldflags "-w -s -checklinkname=0 -X 'github.com/sagernet/sing-box/constant.Version=${VERSION_SINGBOX}'" \
+  -ldflags "-w -s -checklinkname=0 -X 'github.com/sagernet/sing-box/constant.Version=${VERSION_SINGBOX}' -X 'main.version=${VERSION_CORE}'" \
   .
 
 echo "==> built $DEST/$OUT_NAME"
